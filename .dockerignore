@@ -1,0 +1,13 @@
+.git
+.gitignore
+.env
+*.db
+*.sqlite
+data/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+positions.json
+paper_portfolio.json
+paper_positions.json

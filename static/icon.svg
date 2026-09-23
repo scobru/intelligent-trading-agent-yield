@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Yield Agent">
+  <title>Yield Agent</title>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#059669"/>
+      <stop offset="1" stop-color="#0d9488"/>
+    </linearGradient>
+    <linearGradient id="gloss" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.20"/>
+      <stop offset="0.6" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Sfondo -->
+  <rect width="64" height="64" rx="14" fill="url(#bg)"/>
+  <rect width="64" height="64" rx="14" fill="url(#gloss)"/>
+
+  <!-- Pile di monete che crescono: il capitale che matura -->
+  <g fill="#ffffff">
+    <rect x="9" y="46" width="12" height="4" rx="2" fill-opacity="0.75"/>
+    <rect x="9" y="40.5" width="12" height="4" rx="2" fill-opacity="0.75"/>
+
+    <rect x="26" y="46" width="12" height="4" rx="2" fill-opacity="0.88"/>
+    <rect x="26" y="40.5" width="12" height="4" rx="2" fill-opacity="0.88"/>
+    <rect x="26" y="35" width="12" height="4" rx="2" fill-opacity="0.88"/>
+
+    <rect x="43" y="46" width="12" height="4" rx="2"/>
+    <rect x="43" y="40.5" width="12" height="4" rx="2"/>
+    <rect x="43" y="35" width="12" height="4" rx="2"/>
+    <rect x="43" y="29.5" width="12" height="4" rx="2"/>
+  </g>
+
+  <!-- Germoglio sulla pila piu' alta -->
+  <path d="M49 29.5 C49 24 49 21 49 18" fill="none" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round"/>
+  <path d="M49 22 C49 16 53.5 12.5 58 12.5 C58 18 53.5 22 49 22 Z" fill="#a7f3d0"/>
+  <path d="M49 24.5 C49 19.5 45 16.5 41 16.5 C41 21.5 45 24.5 49 24.5 Z" fill="#d1fae5"/>
+</svg>

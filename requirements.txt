@@ -1,0 +1,6 @@
+# ExtraDataToPOAMiddleware esiste solo da web3 7 (in 6.x era geth_poa_middleware)
+web3>=7.0.0,<9
+eth-account>=0.11.0
+python-dotenv
+openai>=1.0.0
+requests>=2.31.0

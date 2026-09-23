@@ -5,7 +5,8 @@
  * Ogni backend espone in /api/... un blocco "meta" con lo stesso schema:
  *   { mode: 'live'|'paper'|'dry_run'|null, updated_at, run_enabled,
  *     paper: { initial_usd, value_usd, pnl_usd, operations, costs_usd,
- *              costs_label, started_at, extra: [[etichetta, valore], ...], note } }
+ *              costs_label, started_at, extra: [[etichetta, valore], ...], note },
+ *     wallet: { address, eth, eth_usd, min_eth, warn_eth, extra: [[etichetta, valore], ...] } }
  * e questi helper disegnano header, modalita', pannello paper ed errori
  * sempre allo stesso modo.
  */
@@ -80,6 +81,38 @@
       $('run').title = meta.run_enabled ? '' : 'Disattivato: imposta DASHBOARD_RUN_TOKEN';
     }
     renderPaper(meta.mode === 'paper' ? meta.paper : null);
+    // in paper il gas e' virtuale: il wallet vero non va tenuto d'occhio
+    renderWallet(meta.mode === 'paper' ? null : meta.wallet);
+  }
+
+  // Wallet del bot: ETH per il gas, con avviso quando va ricaricato
+  function renderWallet(w) {
+    const panel = $('wallet-panel');
+    if (!panel) return;
+    panel.hidden = !w || !isNum(w.eth);
+    if (panel.hidden) return;
+    const eth = Number(w.eth);
+    let state = ['b-ok', 'OK', ''];
+    if (isNum(w.min_eth) && eth < Number(w.min_eth)) {
+      state = ['b-bad', 'RICARICA ORA', `Sotto la riserva minima di ${w.min_eth} ETH: il bot non riesce a pagare il gas.`];
+    } else if (isNum(w.warn_eth) && eth < Number(w.warn_eth)) {
+      state = ['b-warn', 'IN ESAURIMENTO', `Sotto ${w.warn_eth} ETH: ricarica presto per non fermare il bot.`];
+    }
+    panel.classList.toggle('low', state[0] !== 'b-ok');
+    const short = w.address ? String(w.address).slice(0, 6) + '…' + String(w.address).slice(-4) : '--';
+    const link = /^0x[0-9a-fA-F]{40}$/.test(w.address || '')
+      ? `<a href="https://basescan.org/address/${esc(w.address)}" target="_blank" rel="noopener" class="mono">${esc(short)}</a>`
+      : `<span class="mono">${esc(short)}</span>`;
+    const items = [
+      ['⛽ Gas (ETH)', `${eth.toFixed(5)} <small>${isNum(w.eth_usd) ? '≈ ' + usd(w.eth_usd) : ''}</small>`],
+      ...(w.extra || []).map(([k, v]) => [k, esc(v)]),
+      ['Wallet', link],
+    ];
+    $('wallet-items').innerHTML = items.map(([k, v]) =>
+      `<div class="wallet-item"><span>${esc(k)}</span><b>${v}</b></div>`).join('')
+      + `<div class="wallet-item"><span>Stato</span><b><span class="badge ${state[0]}">${state[1]}</span></b></div>`;
+    $('wallet-note').textContent = state[2];
+    $('wallet-note').hidden = !state[2];
   }
 
   function renderPaper(p) {
@@ -170,6 +203,6 @@
   }
 
   window.ITA = { $, esc, isNum, usd, signedUsd, pct, signedPct, big, price, cls, time, empty, cssVar,
-                 since, statusBadge, sideBadge, renderMeta, renderPaper, renderErrors, setupRun,
+                 since, statusBadge, sideBadge, renderMeta, renderPaper, renderWallet, renderErrors, setupRun,
                  setupTabs, lineChart };
 })();

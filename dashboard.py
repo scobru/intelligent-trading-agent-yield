@@ -27,6 +27,9 @@ import db_utils  # noqa: E402
 
 PORT = int(os.getenv("DASHBOARD_PORT", os.getenv("PORT", "3000")))
 RUN_TOKEN = os.getenv("DASHBOARD_RUN_TOKEN", "")
+# Sotto MIN_ETH_RESERVE il bot non opera; sotto GAS_WARN_ETH la dashboard e
+# Telegram chiedono di ricaricare il wallet
+GAS_WARN_ETH = float(os.getenv("GAS_WARN_ETH", "0.002"))
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 STATIC_ROUTES = {
@@ -56,10 +59,10 @@ HTML = r"""<!DOCTYPE html>
 <meta name="theme-color" content="#10b981">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="/static/dashboard.css?v=2">
+<link rel="stylesheet" href="/static/dashboard.css?v=3">
 <style>:root { --primary: #10b981; --accent: #14b8a6; }</style>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
-<script src="/static/dashboard.js?v=2"></script>
+<script src="/static/dashboard.js?v=3"></script>
 </head>
 <body>
 <header class="header">
@@ -80,6 +83,11 @@ HTML = r"""<!DOCTYPE html>
   <div class="card-head"><h2>📝 Paper trading <small>portafoglio virtuale, rendimenti reali</small></h2></div>
   <div class="paper-grid" id="paper-grid"></div>
   <p class="note" id="paper-note"></p>
+</section>
+
+<section class="card wallet-bar" id="wallet-panel" hidden>
+  <div class="wallet-items" id="wallet-items"></div>
+  <p class="note" id="wallet-note" hidden></p>
 </section>
 
 <section class="stats">
@@ -263,8 +271,21 @@ def build_meta(data):
             "note": "I depositi maturano l'APY reale corrente di ogni pool (DefiLlama). Posizioni tenute "
                     "in USD: per vault su WETH/cbBTC non si simula l'oscillazione di prezzo; gas forfettario.",
         }
+    wallet = None
+    if status.get("eth_balance") is not None:
+        eth = float(status["eth_balance"])
+        prices = status.get("prices") or {}
+        eth_px = prices.get("WETH") or prices.get("ETH")
+        wallet = {
+            "address": status.get("wallet"),
+            "eth": eth,
+            "eth_usd": eth * float(eth_px) if eth_px else None,
+            "min_eth": config.MIN_ETH_RESERVE,
+            "warn_eth": GAS_WARN_ETH,
+            "extra": [["USDC nel wallet", f"${float(status.get('usdc_balance') or 0):,.2f}"]],
+        }
     return {"mode": mode, "updated_at": data.get("snapshot_at"),
-            "run_enabled": bool(RUN_TOKEN), "paper": paper}
+            "run_enabled": bool(RUN_TOKEN), "paper": paper, "wallet": wallet}
 
 
 class Handler(BaseHTTPRequestHandler):

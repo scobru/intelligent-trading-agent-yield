@@ -1,8 +1,9 @@
 /*
- * Design system condiviso dalle dashboard dei tre agenti
- * (intelligent-trading-agent, -degen, -yield). Il file e' identico nei tre
- * repository: ogni pagina imposta solo --primary / --accent (e il nome).
- * Se lo modifichi, copialo anche negli altri due.
+ * Design system condiviso dalle dashboard dei quattro agenti
+ * (intelligent-trading-agent, -degen, -yield, -neutral). Il file e'
+ * identico nei quattro repository: ogni pagina imposta solo --primary /
+ * --accent (e il nome).
+ * Se lo modifichi, copialo anche negli altri tre.
  */
 :root {
   --bg: #0b0f19;
@@ -118,6 +119,14 @@ small { color: var(--muted); font-weight: 400; }
 .paper-grid .cell { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
 .paper-grid .cell > span { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
 .paper-grid .cell > b { display: block; font-size: 17px; margin-top: 4px; font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------------- wallet */
+.wallet-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 28px; padding: 14px 20px; margin-bottom: 20px; }
+.wallet-bar.low { border-color: rgba(245,158,11,.55); background: linear-gradient(135deg, rgba(245,158,11,.10), transparent 60%), var(--surface); }
+.wallet-items { display: flex; flex-wrap: wrap; gap: 10px 28px; align-items: center; }
+.wallet-item > span { display: block; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+.wallet-item > b { display: block; font-size: 15px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.wallet-bar .note { margin: 0; flex-basis: 100%; color: var(--warning); font-size: 12px; }
 
 /* ---------------------------------------------------------------- tabelle */
 .table-wrap { overflow-x: auto; }

@@ -188,6 +188,15 @@ capitale, posizioni e ultima decisione AI, sezioni specifiche del bot, storico
 operazioni ed errori. Cambia solo il colore d'accento (blu, arancio, verde)
 e l'icona.
 
+
+#### Wallet e gas
+
+Sotto l'header, fuori dal paper trading, la dashboard mostra il wallet del
+bot: ETH per il gas (con il controvalore), USDC liberi, indirizzo con link a
+Basescan e uno stato: **OK**, **IN ESAURIMENTO** (sotto `GAS_WARN_ETH`) o
+**RICARICA ORA** (sotto la riserva minima). Lo stesso avviso compare nel
+report Telegram del ciclo.
+
 ## 📁 Struttura
 
 | File | Ruolo |

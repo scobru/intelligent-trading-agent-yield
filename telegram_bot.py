@@ -71,6 +71,16 @@ def _mode_line(status: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _gas_line(status: Dict[str, Any]) -> Optional[str]:
+    """Avviso quando l'ETH per il gas nel wallet sta finendo (non in paper)."""
+    eth = status.get("eth_balance")
+    if status.get("mode") == "paper" or eth is None:
+        return None
+    if float(eth) < float(os.getenv("GAS_WARN_ETH", "0.002")):
+        return f"⛽ <b>ETH per il gas: {float(eth):.5f}</b> ⚠️ ricarica il wallet"
+    return None
+
+
 def format_positions(status: Dict[str, Any], limit: int = 6) -> List[str]:
     lines = []
     for p in status.get("positions", [])[:limit]:
@@ -98,6 +108,9 @@ def notify_cycle_result(decision: Dict[str, Any], result: Dict[str, Any],
     mode = _mode_line(status)
     if mode:
         lines.append(mode)
+    gas = _gas_line(status)
+    if gas:
+        lines.append(gas)
 
     if op != "hold":
         if res_status == "rejected":

@@ -177,6 +177,17 @@ Per lo stesso motivo il pulsante "Esegui ciclo ora" della dashboard è
 disattivato finché non imposti `DASHBOARD_RUN_TOKEN`; il browser lo chiede
 una volta e lo ricorda.
 
+#### Dashboard coerente fra i tre agenti
+
+Le dashboard di `intelligent-trading-agent`, `-degen` e `-yield` condividono lo
+stesso design system: `static/dashboard.css` e `static/dashboard.js` sono
+**identici nei tre repository** (se li modifichi, copiali negli altri due).
+Ogni pagina ha la stessa struttura: header con badge di modalità
+(`LIVE` / `PAPER` / `DRY-RUN`), pannello paper trading, KPI, andamento del
+capitale, posizioni e ultima decisione AI, sezioni specifiche del bot, storico
+operazioni ed errori. Cambia solo il colore d'accento (blu, arancio, verde)
+e l'icona.
+
 ## 📁 Struttura
 
 | File | Ruolo |
@@ -194,6 +205,7 @@ una volta e lo ricorda.
 | `http_client.py` | pacing, retry e cache per le API pubbliche (dal bot degen) |
 | `db_utils.py` | SQLite: snapshot, scansioni, operazioni, errori |
 | `dashboard.py` | dashboard web |
+| `static/dashboard.css`, `static/dashboard.js` | design system condiviso con i bot fratelli |
 | `telegram_bot.py` | notifiche e comandi |
 
 ---

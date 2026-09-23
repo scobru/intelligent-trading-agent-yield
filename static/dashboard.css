@@ -1,8 +1,9 @@
 /*
- * Design system condiviso dalle dashboard dei tre agenti
- * (intelligent-trading-agent, -degen, -yield). Il file e' identico nei tre
- * repository: ogni pagina imposta solo --primary / --accent (e il nome).
- * Se lo modifichi, copialo anche negli altri due.
+ * Design system condiviso dalle dashboard dei quattro agenti
+ * (intelligent-trading-agent, -degen, -yield, -neutral). Il file e'
+ * identico nei quattro repository: ogni pagina imposta solo --primary /
+ * --accent (e il nome).
+ * Se lo modifichi, copialo anche negli altri tre.
  */
 :root {
   --bg: #0b0f19;

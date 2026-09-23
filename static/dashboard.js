@@ -1,6 +1,6 @@
 /*
- * Helper condivisi dalle dashboard dei tre agenti. Identico nei tre
- * repository, come dashboard.css: se lo modifichi, copialo negli altri due.
+ * Helper condivisi dalle dashboard dei quattro agenti. Identico nei quattro
+ * repository, come dashboard.css: se lo modifichi, copialo negli altri tre.
  *
  * Ogni backend espone in /api/... un blocco "meta" con lo stesso schema:
  *   { mode: 'live'|'paper'|'dry_run'|null, updated_at, run_enabled,

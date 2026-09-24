@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 ADAPTER_CLASSES = {
     "aave-v3": protocols.AaveV3Adapter,
+    "aave-v3-loop": protocols.AaveV3LoopAdapter,
     "erc4626": protocols.ERC4626Adapter,
     "compound-v3": protocols.CometAdapter,
     "ctoken": protocols.CTokenAdapter,
@@ -36,6 +37,14 @@ def _adapter_from_dict(client: BaseClient, data: Dict[str, Any]) -> protocols.Ad
     kind = data["kind"]
     if kind == "aave-v3":
         return protocols.AaveV3Adapter(client, data["asset"])
+    if kind == "aave-v3-loop":
+        return protocols.AaveV3LoopAdapter(
+            client,
+            data["asset"],
+            data.get("borrow_asset", config.WETH),
+            leverage=float(data.get("leverage", config.LOOP_MAX_LEVERAGE)),
+            staking_yield=float(data.get("staking_yield", 3.2)) if "staking_yield" in data else None,
+        )
     return ADAPTER_CLASSES[kind](client, data["address"], data["asset"])
 
 
@@ -73,17 +82,35 @@ class YieldManager:
         """Prezzo in USD degli asset gestiti (USDC = 1 per definizione)."""
         if self._prices is None:
             prices = {"USDC": 1.0}
-            # anche gli asset delle posizioni gia' aperte: se DEPOSIT_ASSETS
-            # e' stato ristretto dopo, vanno comunque valorizzate
             held = {p.get("asset") for p in self.store.positions.values()}
+
+            # 1. Se serve prezzare WETH o asset LST (wstETH, cbETH), quota prima WETH in USDC
+            needs_eth = any(s in config.DEPOSIT_ASSETS or s in held for s in ("WETH", "wstETH", "cbETH"))
+            if needs_eth and "WETH" not in prices:
+                try:
+                    weth_price = self.uniswap.price_in_quote(config.WETH, config.USDC, probe_units=0.01)
+                    if weth_price:
+                        prices["WETH"] = weth_price
+                except Exception as exc:
+                    logger.warning("Prezzo WETH non disponibile: %s", exc)
+
+            # 2. Prezza gli altri asset
             for sym, meta in config.KNOWN_ASSETS.items():
-                if sym == "USDC" or (sym not in config.DEPOSIT_ASSETS and sym not in held):
+                if sym in prices or (sym not in config.DEPOSIT_ASSETS and sym not in held):
                     continue
                 try:
-                    # quota piccola: il prezzo non deve risentire della profondita' del pool
-                    price = self.uniswap.price_in_quote(meta["address"], config.USDC, probe_units=0.01)
-                    if price:
-                        prices[sym] = price
+                    if sym in ("wstETH", "cbETH") and "WETH" in prices:
+                        # Gli LST hanno pool diretti liquidi con WETH
+                        probe = self.uniswap.price_in_quote(meta["address"], config.WETH, probe_units=0.01)
+                        if probe:
+                            prices[sym] = probe * prices["WETH"]
+                        else:
+                            fallback_ratio = 1.18 if sym == "wstETH" else 1.08
+                            prices[sym] = prices["WETH"] * fallback_ratio
+                    else:
+                        price = self.uniswap.price_in_quote(meta["address"], config.USDC, probe_units=0.01)
+                        if price:
+                            prices[sym] = price
                 except Exception as exc:
                     logger.warning("Prezzo %s non disponibile: %s", sym, exc)
             self._prices = prices
@@ -141,7 +168,12 @@ class YieldManager:
             idle_assets: Dict[str, float] = {}
             for pid, ppos in self.paper.positions.items():
                 meta = self.store.get(pid) or {}
-                positions.append(self._position_row(pid, meta, current.get(pid), ppos["value_usd"], None))
+                positions.append(self._position_row(
+                    pid, meta, current.get(pid), ppos["value_usd"], None,
+                    is_loop=ppos.get("is_loop"),
+                    leverage=ppos.get("leverage"),
+                    health_factor=ppos.get("health_factor")
+                ))
         else:
             usdc = self.client.balance_of_float(config.USDC)
             eth = self.client.eth_balance()
@@ -168,7 +200,18 @@ class YieldManager:
                     self.store.record_withdraw(pid, 1.0)
                     continue
                 withdrawable = protocols.raw_to_float(adapter.withdrawable_raw(), asset) * prices.get(asset, 0.0)
-                positions.append(self._position_row(pid, meta, current.get(pid), value, withdrawable))
+                hf = None
+                if isinstance(adapter, protocols.AaveV3LoopAdapter):
+                    try:
+                        hf = adapter.health_factor()
+                    except Exception as exc:
+                        logger.warning("Errore lettura health factor per %s: %s", pid, exc)
+                positions.append(self._position_row(
+                    pid, meta, current.get(pid), value, withdrawable,
+                    is_loop=isinstance(adapter, protocols.AaveV3LoopAdapter) or meta.get("is_loop"),
+                    leverage=meta.get("leverage"),
+                    health_factor=hf
+                ))
 
             # depositi fatti a mano nei pool dell'universo: li adottiamo
             for pool in self.universe:
@@ -183,7 +226,18 @@ class YieldManager:
                 value = amount * prices.get(pool["asset"], 0.0)
                 if value >= config.DUST_USD:
                     meta = self.store.adopt(pool, adapter.to_dict(), value, amount)
-                    positions.append(self._position_row(pid, meta, pool, value, None))
+                    hf = None
+                    if isinstance(adapter, protocols.AaveV3LoopAdapter):
+                        try:
+                            hf = adapter.health_factor()
+                        except Exception:
+                            pass
+                    positions.append(self._position_row(
+                        pid, meta, pool, value, None,
+                        is_loop=isinstance(adapter, protocols.AaveV3LoopAdapter) or pool.get("is_loop"),
+                        leverage=pool.get("leverage"),
+                        health_factor=hf
+                    ))
 
         idle_other_usd = sum(a * prices.get(s, 0.0) for s, a in idle_assets.items())
         invested = sum(p["value_usd"] for p in positions)
@@ -213,10 +267,15 @@ class YieldManager:
         return status
 
     def _position_row(self, pid: str, meta: Dict[str, Any], pool: Optional[Dict[str, Any]],
-                      value_usd: float, withdrawable_usd: Optional[float]) -> Dict[str, Any]:
+                      value_usd: float, withdrawable_usd: Optional[float],
+                      is_loop: bool = False, leverage: Optional[float] = None,
+                      health_factor: Optional[float] = None) -> Dict[str, Any]:
         pool = pool or {}
         opened = meta.get("opened_at") or time.time()
         deposited = float(meta.get("deposited_usd") or 0.0)
+        is_loop_val = bool(is_loop or meta.get("is_loop") or pool.get("is_loop"))
+        lev_val = leverage or meta.get("leverage") or pool.get("leverage")
+        hf_val = health_factor if health_factor is not None else meta.get("health_factor")
         return {
             "pool_id": pid,
             "project": meta.get("project") or pool.get("project"),
@@ -233,6 +292,9 @@ class YieldManager:
             "held_hours": round((time.time() - opened) / 3600, 2),
             "withdrawable_usd": round(withdrawable_usd, 4) if withdrawable_usd is not None else None,
             "in_universe": self._pool_in_universe(pid) is not None,
+            "is_loop": is_loop_val,
+            "leverage": round(float(lev_val), 2) if lev_val else None,
+            "health_factor": round(float(hf_val), 2) if hf_val is not None and math.isfinite(hf_val) else (hf_val if hf_val is not None else None),
         }
 
     # ------------------------------------------------------------ uscite di rischio
@@ -245,6 +307,10 @@ class YieldManager:
             keys = {pos["pool_id"].lower(), str((meta.get("adapter") or {}).get("address") or "").lower()}
             if keys & config.POOL_BLOCKLIST:
                 trigger = "POOL_BLOCKLIST"
+            elif pos.get("is_loop") and pos.get("health_factor") is not None:
+                hf = pos["health_factor"]
+                if isinstance(hf, (int, float)) and hf < config.LOOP_MIN_HEALTH_FACTOR:
+                    trigger = f"HEALTH_FACTOR_LOW_{hf:.2f}"
             elif pos.get("entry_tvl") and pos.get("tvl_now") is not None:
                 drop = (1 - float(pos["tvl_now"]) / float(pos["entry_tvl"])) * 100
                 if drop >= config.EXIT_TVL_DROP_PCT:
@@ -373,6 +439,19 @@ class YieldManager:
 
     def _plan_deposit(self, pool: Dict[str, Any], amount_usd: float) -> List[str]:
         steps = []
+        if pool.get("is_loop"):
+            leverage = float(pool.get("leverage") or config.LOOP_MAX_LEVERAGE)
+            collateral_sym = pool.get("asset", "wstETH")
+            borrow_sym = pool.get("borrow_asset", "WETH")
+            if collateral_sym != "USDC":
+                steps.append(f"swap ${amount_usd:.2f} USDC -> {collateral_sym} su Uniswap V3")
+            steps.append(f"approve {collateral_sym} ad Aave V3 Pool ({config.AAVE_V3_POOL})")
+            steps.append(f"supply {collateral_sym} come collateral iniziale")
+            steps.append(f"loop: borrow {borrow_sym} a tasso variabile (target leva {leverage:.1f}x)")
+            steps.append(f"loop: swap {borrow_sym} -> {collateral_sym} su Uniswap V3")
+            steps.append(f"loop: supply {collateral_sym} per leva {leverage:.1f}x (Health Factor target ~{config.LOOP_TARGET_HEALTH_FACTOR:.2f})")
+            return steps
+
         if pool["asset"] != "USDC":
             steps.append(f"swap ${amount_usd:.2f} USDC -> {pool['asset']} su Uniswap V3")
         steps.append(f"approve {pool['asset']} a {pool.get('contract')}")
@@ -400,6 +479,45 @@ class YieldManager:
         adapter = self.adapters[pool["pool_id"]]
         asset_sym = pool["asset"]
         txs = []
+
+        if pool.get("is_loop") or isinstance(adapter, protocols.AaveV3LoopAdapter):
+            # 1. Swap USDC -> Collateral (wstETH/cbETH) se necessario
+            if asset_sym == "USDC":
+                collateral_raw = protocols.float_to_raw(amount_usd, "USDC")
+            else:
+                before = self.client.balance_of(adapter.asset)
+                txs.append(self._swap(config.USDC, adapter.asset,
+                                      protocols.float_to_raw(amount_usd, "USDC"),
+                                      f"USDC -> {asset_sym}"))
+                collateral_raw = self.client.balance_of(adapter.asset) - before
+                if collateral_raw <= 0:
+                    raise BaseChainError(f"lo swap non ha prodotto {asset_sym}")
+
+            # 2. Approve e supply iniziale del collateral
+            app = self.client.ensure_allowance(adapter.asset, adapter.spender, collateral_raw)
+            if app:
+                txs.append(app)
+            txs.append(self._send(adapter.deposit_fn(collateral_raw), f"supply {asset_sym} collateral"))
+
+            # 3. Looping: borrow WETH, swap in collateral e rideposita
+            leverage = getattr(adapter, "leverage", config.LOOP_MAX_LEVERAGE)
+            if leverage > 1.05:
+                borrow_weth_raw = int(collateral_raw * (leverage - 1.0))
+                if borrow_weth_raw > 0:
+                    txs.append(self._send(adapter.borrow_fn(borrow_weth_raw), f"borrow WETH (loop {leverage:.1f}x)"))
+                    before_loop = self.client.balance_of(adapter.asset)
+                    txs.append(self._swap(config.WETH, adapter.asset, borrow_weth_raw, f"WETH -> {asset_sym}"))
+                    reinvest_raw = self.client.balance_of(adapter.asset) - before_loop
+                    if reinvest_raw > 0:
+                        app_reinvest = self.client.ensure_allowance(adapter.asset, adapter.spender, reinvest_raw)
+                        if app_reinvest:
+                            txs.append(app_reinvest)
+                        txs.append(self._send(adapter.deposit_fn(reinvest_raw), f"re-supply {asset_sym} collateral"))
+
+            amount_asset = protocols.raw_to_float(collateral_raw, asset_sym)
+            adapter_dict = adapter.to_dict()
+            self.store.record_deposit(pool, adapter_dict, amount_usd, amount_asset)
+            return {"status": "success", "transactions": txs, "amount_asset": amount_asset}
 
         if asset_sym == "USDC":
             amount_raw = protocols.float_to_raw(amount_usd, "USDC")
@@ -447,6 +565,19 @@ class YieldManager:
             self.store.record_withdraw(pos["pool_id"], fraction)
             return dict(base, status="paper", **res)
         if config.DRY_RUN:
+            if pos.get("is_loop"):
+                collateral_sym = pos.get("asset", "wstETH")
+                borrow_sym = "WETH"
+                plan = [
+                    f"de-loop: withdraw partial collateral {collateral_sym} da Aave V3",
+                    f"de-loop: swap {collateral_sym} -> {borrow_sym} su Uniswap V3",
+                    f"de-loop: repay debito {borrow_sym} su Aave V3",
+                    f"withdraw remaining collateral {collateral_sym} ({fraction:.0%})",
+                ]
+                if collateral_sym != "USDC":
+                    plan.append(f"swap {collateral_sym} -> USDC su Uniswap V3")
+                return dict(base, status="dry_run", plan=plan)
+
             plan = [f"withdraw {fraction:.0%} da {pos.get('project')} {pos.get('symbol')}"]
             if pos.get("asset") != "USDC":
                 plan.append(f"swap {pos.get('asset')} -> USDC su Uniswap V3")
@@ -460,6 +591,40 @@ class YieldManager:
             raise BaseChainError(f"contratto del pool {pos['pool_id']} non ricostruibile")
         asset_sym = pos["asset"]
         txs = []
+
+        if pos.get("is_loop") or isinstance(adapter, protocols.AaveV3LoopAdapter):
+            # De-looping: rimborso del debito e prelievo del collateral
+            debt_raw = adapter.debt_raw() if hasattr(adapter, "debt_raw") else 0
+            if debt_raw > 0:
+                weth_bal = self.client.balance_of(config.WETH)
+                if weth_bal < debt_raw:
+                    withdrawable = adapter.withdrawable_raw()
+                    if withdrawable > 0:
+                        txs.append(self._send(adapter.withdraw_fn(withdrawable), f"withdraw partial {asset_sym} for de-loop"))
+                        avail_collateral = self.client.balance_of(adapter.asset)
+                        if avail_collateral > 0:
+                            txs.append(self._swap(adapter.asset, config.WETH, avail_collateral, f"{asset_sym} -> WETH"))
+                repay_amt = min(self.client.balance_of(config.WETH), debt_raw)
+                if repay_amt > 0:
+                    app = self.client.ensure_allowance(config.WETH, adapter.spender, repay_amt)
+                    if app:
+                        txs.append(app)
+                    txs.append(self._send(adapter.repay_fn(repay_amt), "repay WETH debt"))
+
+            before_col = self.client.balance_of(adapter.asset)
+            fn = adapter.withdraw_fn(None if fraction >= 0.999 else int(adapter.balance_raw() * fraction))
+            txs.append(self._send(fn, f"withdraw {pos.get('symbol')} collateral"))
+            received_raw = self.client.balance_of(adapter.asset) - before_col
+
+            self.store.record_withdraw(pos["pool_id"], fraction)
+            received_usd = protocols.raw_to_float(received_raw, asset_sym) * self.prices().get(asset_sym, 0.0)
+
+            if asset_sym != "USDC" and received_raw > 0:
+                before_usdc = self.client.balance_of(config.USDC)
+                txs.append(self._swap(adapter.asset, config.USDC, received_raw, f"{asset_sym} -> USDC"))
+                received_usd = protocols.raw_to_float(self.client.balance_of(config.USDC) - before_usdc, "USDC")
+
+            return {"status": "success", "transactions": txs, "withdrawn_usd": round(received_usd, 4), "partial": False}
 
         before = self.client.balance_of(adapter.asset)
         if fraction >= 0.999:

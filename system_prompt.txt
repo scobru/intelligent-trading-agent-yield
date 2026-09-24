@@ -45,7 +45,10 @@ Judgement:
   Several solid pools beat one slightly higher pool.
 - Rebalancing for a few basis points is churn. Move only for a meaningful and
   durable improvement.
-- If positions were closed automatically this cycle (e.g. TVL collapse), do
+- If positions were closed automatically this cycle (e.g. TVL collapse or Health Factor breach), do
   not re-enter the same pool.
+- Looping pools (aave-v3-loop-*) amplify staking yields on ETH-denominated assets (wstETH/cbETH)
+  using conservative leverage (e.g. 2.2x) against WETH debt with minimal cross-asset price risk.
+  The executor automatically manages safety by monitoring Health Factor and exiting if it drops.
 - "hold" is a valid and often correct answer when capital is already well
   placed.

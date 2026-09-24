@@ -55,6 +55,8 @@ PRIVATE_KEY = os.getenv("PRIVATE_KEY", "")
 WETH = "0x4200000000000000000000000000000000000006"
 USDC = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
 CBBTC = "0xcbB7C0000aB88B473b1f5aFd9ef808440eed33Bf"
+WSTETH = "0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452"
+CBETH = "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22"
 
 # Uniswap V3 su Base: serve solo quando l'asset del vault non e' USDC
 UNISWAP_V3_FACTORY = "0x33128a8fC17869897dcE68Ed026d694621f6FDfD"
@@ -67,19 +69,35 @@ AAVE_V3_POOL = "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5"
 
 # Asset che il bot sa detenere. Il capitale inattivo sta in USDC; gli altri
 # si comprano via Uniswap solo quando un vault su quell'asset vince.
+# Per wstETH e cbETH e' indicato lo staking yield nativo (Lido / Coinbase).
 KNOWN_ASSETS = {
     "USDC": {"address": USDC, "decimals": 6, "stable": True},
     "WETH": {"address": WETH, "decimals": 18, "stable": False},
     "CBBTC": {"address": CBBTC, "decimals": 8, "stable": False},
+    "wstETH": {"address": WSTETH, "decimals": 18, "stable": False, "staking_yield": 3.2},
+    "cbETH": {"address": CBETH, "decimals": 18, "stable": False, "staking_yield": 2.8},
 }
+
+# ---------------------------------------------------------------- looping lending (leveraged staking)
+ENABLE_LOOPING = _b("ENABLE_LOOPING", True)
+LOOP_MAX_LEVERAGE = _f("LOOP_MAX_LEVERAGE", 2.2)               # Leva max conservativa (2.0x - 2.2x)
+LOOP_TARGET_HEALTH_FACTOR = _f("LOOP_TARGET_HEALTH_FACTOR", 1.55) # Target Health Factor iniziale
+LOOP_MIN_HEALTH_FACTOR = _f("LOOP_MIN_HEALTH_FACTOR", 1.30)    # Sotto 1.30 = uscita automatica per rischio liquidazione
+LOOP_MIN_NET_APY = _f("LOOP_MIN_NET_APY", 3.0)                 # Rendimento minimo netto per considerare il loop (%)
+LOOP_BORROW_ASSET = os.getenv("LOOP_BORROW_ASSET", "WETH")     # Asset preso in prestito per la leva (ETH-denominated)
 
 # Quali asset il bot puo' depositare. Default solo USDC: niente rischio
 # di prezzo, il rendimento e' l'unica variabile.
+# Se il looping e' attivo, ammette anche wstETH e cbETH per la strategia a leva.
+_known_canon = {k.lower(): k for k in KNOWN_ASSETS}
 DEPOSIT_ASSETS = {
-    s.strip().upper()
+    _known_canon[s.strip().lower()]
     for s in os.getenv("DEPOSIT_ASSETS", "USDC").split(",")
-    if s.strip().upper() in KNOWN_ASSETS
+    if s.strip().lower() in _known_canon
 } or {"USDC"}
+
+if ENABLE_LOOPING:
+    DEPOSIT_ASSETS.update({"wstETH", "cbETH"})
 
 BASE_CURRENCY = "USDC"
 

@@ -22,9 +22,13 @@ from yield_manager import YieldManager
 def _positions_for_prompt(status):
     lines = []
     for p in status["positions"]:
+        loop_str = ""
+        if p.get("is_loop"):
+            hf_str = f", HF {p['health_factor']:.2f}" if p.get("health_factor") is not None else ""
+            loop_str = f" | LOOP {p.get('leverage', 1.0):.1f}x{hf_str}"
         lines.append(
             f"- pool_id={p['pool_id']} | {p['project']} {p['symbol']}"
-            f"{' (' + p['pool_meta'] + ')' if p.get('pool_meta') else ''} | "
+            f"{' (' + p['pool_meta'] + ')' if p.get('pool_meta') else ''}{loop_str} | "
             f"valore ${p['value_usd']:.2f} | APY ora "
             f"{p['apy_now'] if p['apy_now'] is not None else 'n/d'}% (ingresso {p.get('entry_apy')}%) | "
             f"TVL ${p['tvl_now'] or 0:,.0f} | aperta da {p['held_hours']:.0f}h | "
@@ -109,7 +113,8 @@ def run_cycle():
         f"max per pool {config.MAX_POOL_PCT:.0%}, max per protocollo {config.MAX_PROTOCOL_PCT:.0%}, "
         f"max {config.MAX_POSITIONS} posizioni, deposito ${config.MIN_DEPOSIT_USD:.0f}-${config.MAX_DEPOSIT_USD:.0f}, "
         f"ribilanciamento solo con +{config.MIN_APY_IMPROVEMENT:.2f} punti di APY, dopo "
-        f"{config.MIN_HOLD_HOURS:.0f}h e se si ripaga entro {config.MAX_BREAKEVEN_DAYS:.0f} giorni\n"
+        f"{config.MIN_HOLD_HOURS:.0f}h e se si ripaga entro {config.MAX_BREAKEVEN_DAYS:.0f} giorni; "
+        f"looping: leva max {config.LOOP_MAX_LEVERAGE:.1f}x, uscita automatica se Health Factor < {config.LOOP_MIN_HEALTH_FACTOR:.2f}\n"
         f"</limiti_esecutore>\n"
     )
     portfolio_data = (

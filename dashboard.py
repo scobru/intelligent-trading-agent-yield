@@ -161,7 +161,7 @@ HTML = r"""<!DOCTYPE html>
 <script>
 const { $, esc, usd, signedUsd, pct, big, cls, time, empty, sideBadge, statusBadge } = ITA;
 let chart = null, data = null, tab = 'approved';
-const poolName = (p) => `${esc(p.project)} <b>${esc(p.symbol)}</b>${p.pool_meta ? ' <small>' + esc(p.pool_meta) + '</small>' : ''}`;
+const poolName = (p) => `${esc(p.project)} <b>${esc(p.symbol)}</b>${p.pool_meta ? ' <small>' + esc(p.pool_meta) + '</small>' : ''}${p.is_loop ? ' <span class="badge b-ok">LOOP ' + (p.leverage ? Number(p.leverage).toFixed(1) + 'x' : '') + (p.health_factor ? ' • HF ' + Number(p.health_factor).toFixed(2) : '') + '</span>' : ''}`;
 
 function renderStatus(s) {
   if (!s) { $('positions').innerHTML = empty(9, 'In attesa del primo ciclo.'); return; }

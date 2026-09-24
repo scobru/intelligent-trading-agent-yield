@@ -110,12 +110,19 @@ class PaperBook:
     def deposit(self, pool: Dict[str, Any], amount_usd: float) -> Dict[str, Any]:
         amount_usd = min(amount_usd, self.usdc)
         needs_swap = pool.get("asset") != "USDC"
-        n_tx = 2 + (2 if needs_swap else 0)            # approve+deposit, approve+swap
+        is_loop = bool(pool.get("is_loop"))
+        # Per un loop servono piu' passaggi (supply, borrow, swap, supply)
+        n_tx = (4 if is_loop else 2) + (2 if needs_swap else 0)
         cost = self._charge(n_tx, amount_usd if needs_swap else 0.0)
         net = max(0.0, amount_usd - cost)
         self.state["usdc"] = self.usdc - amount_usd
         pos = self.positions.setdefault(pool["pool_id"], {
-            "value_usd": 0.0, "asset": pool.get("asset"), "last_accrual": time.time(),
+            "value_usd": 0.0,
+            "asset": pool.get("asset"),
+            "last_accrual": time.time(),
+            "is_loop": is_loop,
+            "leverage": pool.get("leverage", 1.0) if is_loop else 1.0,
+            "health_factor": pool.get("target_health_factor", config.LOOP_TARGET_HEALTH_FACTOR) if is_loop else None,
         })
         pos["value_usd"] = float(pos["value_usd"]) + net
         self.state["operations"] = int(self.state.get("operations", 0)) + 1
@@ -129,7 +136,9 @@ class PaperBook:
         fraction = max(0.0, min(1.0, fraction))
         gross = float(pos["value_usd"]) * fraction
         needs_swap = pos.get("asset") != "USDC"
-        cost = self._charge(1 + (2 if needs_swap else 0), gross if needs_swap else 0.0)
+        is_loop = bool(pos.get("is_loop"))
+        n_tx = (4 if is_loop else 1) + (2 if needs_swap else 0)
+        cost = self._charge(n_tx, gross if needs_swap else 0.0)
         net = max(0.0, gross - cost)
         if fraction >= 0.999:
             del self.positions[pool_id]

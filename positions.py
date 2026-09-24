@@ -59,6 +59,10 @@ class PositionStore:
                 "opened_at": now,
                 "entry_apy": pool.get("effective_apy"),
                 "entry_tvl": pool.get("tvl_usd"),
+                "is_loop": bool(pool.get("is_loop") or adapter.get("kind") == "aave-v3-loop"),
+                "leverage": pool.get("leverage") or adapter.get("leverage"),
+                "borrow_asset": pool.get("borrow_asset") or adapter.get("borrow_asset"),
+                "health_factor": pool.get("target_health_factor"),
             }
             self.positions[pool["pool_id"]] = pos
         pos["deposited_usd"] = float(pos.get("deposited_usd", 0.0)) + float(amount_usd)

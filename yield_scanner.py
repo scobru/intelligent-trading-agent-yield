@@ -20,7 +20,7 @@ import logging
 import math
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import config
 import http_client
@@ -171,6 +171,90 @@ def normalize(pool: Dict[str, Any], status: str, reason: str = "") -> Dict[str, 
     }
 
 
+def build_loop_pools(base_pools: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """
+    Costruisce e valuta le opportunita' di Looping (leveraged staking) su Aave V3.
+    Collateral: wstETH / cbETH, Debito: WETH.
+    """
+    if not config.ENABLE_LOOPING:
+        return [], []
+
+    weth_pool = None
+    lst_pools = {}
+    for p in base_pools:
+        if str(p.get("project") or "").lower() == "aave-v3":
+            sym = str(p.get("symbol") or "").upper()
+            if sym == "WETH":
+                weth_pool = p
+            elif sym in ("WSTETH", "CBETH"):
+                lst_pools[sym] = p
+
+    # Tasso di prestito WETH stimato
+    weth_supply = _num(weth_pool.get("apyBase"), 1.4) if weth_pool else 1.4
+    borrow_apy = max(weth_supply * 1.45, 2.0)
+
+    loop_candidates = [
+        ("wstETH", config.WSTETH, "WSTETH"),
+        ("cbETH", config.CBETH, "CBETH"),
+    ]
+
+    approved, rejected = [], []
+    leverage = config.LOOP_MAX_LEVERAGE
+
+    for sym, addr, key in loop_candidates:
+        p_data = lst_pools.get(key)
+        if not p_data:
+            continue
+        staking_yield = config.KNOWN_ASSETS.get(sym, {}).get("staking_yield", 3.0)
+        tvl_usd = _num(p_data.get("tvlUsd"), 30_000_000)
+        supply_apy = _num(p_data.get("apyBase"), 0.0)
+
+        # Net APY = (staking_yield + supply_apy) * L - borrow_apy * (L - 1)
+        net_apy = (staking_yield + supply_apy) * leverage - borrow_apy * (leverage - 1.0)
+        pool_id = f"aave-v3-loop-{sym.lower()}-weth"
+
+        depth = min(1.0, math.log10(max(tvl_usd, 1.0)) / 8.0)
+        score = round(net_apy * (0.5 + 0.5 * depth), 4)
+
+        item = {
+            "pool_id": pool_id,
+            "project": "aave-v3-loop",
+            "symbol": f"{sym}-WETH ({leverage:.1f}x Loop)",
+            "pool_meta": f"Leveraged Staking: {sym} supply + WETH borrow ({leverage:.1f}x)",
+            "asset": sym,
+            "asset_address": addr,
+            "borrow_asset": "WETH",
+            "borrow_asset_address": config.WETH,
+            "addresses": [config.AAVE_V3_POOL.lower()],
+            "tvl_usd": round(tvl_usd, 2),
+            "apy": round(net_apy, 4),
+            "apy_base": round((staking_yield + supply_apy) * leverage, 4),
+            "apy_reward": 0.0,
+            "apy_mean_30d": round(net_apy, 4),
+            "apy_change_7d": 0.0,
+            "effective_apy": round(net_apy, 4),
+            "stablecoin": False,
+            "history_days": 180,
+            "reward_tokens": [],
+            "score": score,
+            "is_loop": True,
+            "leverage": leverage,
+            "staking_yield": staking_yield,
+            "borrow_apy": round(borrow_apy, 4),
+            "target_health_factor": config.LOOP_TARGET_HEALTH_FACTOR,
+        }
+
+        if _is_blocked({"pool": pool_id, "addresses": [config.AAVE_V3_POOL]}):
+            rejected.append(dict(item, status="rejected", reason="in blocklist"))
+        elif net_apy < config.LOOP_MIN_NET_APY:
+            rejected.append(dict(item, status="rejected",
+                                 reason=f"Net APY del loop ({net_apy:.2f}%) sotto soglia minima ({config.LOOP_MIN_NET_APY:.2f}%)"))
+        else:
+            approved.append(dict(item, status="approved", reason=""))
+
+    return approved, rejected
+
+
 def fetch_base_pools() -> List[Dict[str, Any]]:
     data = http_client.get_json(
         config.DEFILLAMA_POOLS_URL, timeout=config.HTTP_TIMEOUT, cache_ttl=300
@@ -189,6 +273,12 @@ def screen(pools: List[Dict[str, Any]]):
             rejected.append(normalize(pool, "rejected", reason))
         else:
             approved.append(normalize(pool, "approved"))
+
+    if config.ENABLE_LOOPING:
+        loop_app, loop_rej = build_loop_pools(pools)
+        approved.extend(loop_app)
+        rejected.extend(loop_rej)
+
     approved.sort(key=lambda p: p["score"], reverse=True)
     return approved, rejected
 
@@ -223,6 +313,9 @@ def get_last_rejected() -> List[Dict[str, Any]]:
 
 def find_pool(pool_id: str) -> Optional[Dict[str, Any]]:
     """Dati correnti di un pool qualsiasi su Base (anche se non passa lo screening)."""
+    if pool_id.startswith("aave-v3-loop"):
+        res = pools_by_id([pool_id])
+        return res.get(pool_id)
     try:
         for pool in fetch_base_pools():
             if str(pool.get("pool")) == pool_id:
@@ -238,13 +331,24 @@ def pools_by_id(pool_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     out: Dict[str, Dict[str, Any]] = {}
     if not wanted:
         return out
+
+    loop_ids = {pid for pid in wanted if pid.startswith("aave-v3-loop")}
+    pools = []
     try:
-        for pool in fetch_base_pools():
+        pools = fetch_base_pools()
+        for pool in pools:
             pid = str(pool.get("pool"))
             if pid in wanted:
                 out[pid] = normalize(pool, "tracked")
     except Exception as exc:
         logger.warning("Lookup pool fallito: %s", exc)
+
+    if loop_ids:
+        loop_app, loop_rej = build_loop_pools(pools)
+        for lp in loop_app + loop_rej:
+            if lp["pool_id"] in loop_ids:
+                out[lp["pool_id"]] = lp
+
     return out
 
 
@@ -256,9 +360,16 @@ def format_universe_for_prompt(universe: List[Dict[str, Any]]) -> str:
         "TVL | storico | eseguibile"
     ]
     for p in universe:
+        if p.get("is_loop"):
+            apy_desc = (
+                f"{p['effective_apy']:.2f}% (net loop: {p.get('staking_yield', 0):.2f}% staking "
+                f"@{p.get('leverage', 1):.1f}x - {p.get('borrow_apy', 0):.2f}% WETH borrow)"
+            )
+        else:
+            apy_desc = f"{p['effective_apy']:.2f}% ({p['apy_base']:.2f}% + {p['apy_reward']:.2f}%)"
         lines.append(
             f"{p['pool_id']} | {p['project']}{' (' + p['pool_meta'] + ')' if p.get('pool_meta') else ''} | "
-            f"{p['asset']} | {p['effective_apy']:.2f}% ({p['apy_base']:.2f}% + {p['apy_reward']:.2f}%) | "
+            f"{p['asset']} | {apy_desc} | "
             f"{p['apy_mean_30d']:.2f}% | ${p['tvl_usd']:,.0f} | {p['history_days']}g | "
             f"{'si (' + p['adapter'] + ')' if p.get('adapter') else 'no, solo monitoraggio'}"
         )

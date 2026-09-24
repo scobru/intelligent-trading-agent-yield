@@ -100,6 +100,18 @@ venduti — il bot non lo fa ancora da solo — e possono finire da un giorno
 all'altro. Nell'ordinamento l'APY di oggi è anche limitato a 1.5 volte la
 media a 30 giorni: un picco di utilizzo non deve far spostare il capitale.
 
+### Looping sul lending (Leveraged Staking Yield)
+
+Quando `ENABLE_LOOPING=true`, l'agente può amplificare lo staking yield su asset liquidi ancorati a ETH (**wstETH** e **cbETH**) su Aave V3:
+
+- **Meccanica**: deposita wstETH/cbETH come collateral, prende in prestito WETH e rideposita per raggiungere una leva conservativa (default `LOOP_MAX_LEVERAGE=2.2x`).
+- **Nessun rischio cross-asset**: collateral e debito sono entrambi denominati in ETH (nessun rischio di liquidazione da oscillazione del prezzo ETH/USD).
+- **Formula Net APY**:
+  $$\text{Net APY} = (\text{Staking Yield} + \text{Supply APY}) \times L - \text{Borrow APY} \times (L - 1)$$
+- **Sicurezza e Health Factor**:
+  - Target iniziale: `LOOP_TARGET_HEALTH_FACTOR=1.55` (LTV ~50-55% su soglia di liquidazione Aave >85%).
+  - Uscita automatica di sicurezza: se l'Health Factor on-chain scende sotto `LOOP_MIN_HEALTH_FACTOR=1.30`, l'esecutore attiva una **liquidazione/unwind automatica** immediata a tutela del capitale, senza attendere il ciclo LLM.
+
 ---
 
 ## 🚀 Avvio

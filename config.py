@@ -106,6 +106,12 @@ TX_TIMEOUT_SECONDS = _i("TX_TIMEOUT_SECONDS", 180)
 # convenienza di un ribilanciamento (su Base e' tipicamente pochi centesimi)
 EST_TX_COST_USD = _f("EST_TX_COST_USD", 0.05)
 
+# ---------------------------------------------------------------- auto-refuel USDC da ETH
+AUTO_SWAP_ETH_TO_USDC = _b("AUTO_SWAP_ETH_TO_USDC", True)
+ETH_GAS_RESERVE = _f("ETH_GAS_RESERVE", 0.003)          # Riserva di ETH nativo per gas fee
+MIN_ETH_SWAP_AMOUNT = _f("MIN_ETH_SWAP_AMOUNT", 0.002)   # Soglia minima di ETH spendibile
+USDC_AUTO_SWAP_THRESHOLD = _f("USDC_AUTO_SWAP_THRESHOLD", 5.0)  # Attiva swap se USDC < soglia
+
 # ---------------------------------------------------------------- limiti di rischio
 MAX_POOL_PCT = _f("MAX_POOL_PCT", 0.40)          # quota massima in un solo pool
 MAX_PROTOCOL_PCT = _f("MAX_PROTOCOL_PCT", 0.60)  # quota massima su un protocollo

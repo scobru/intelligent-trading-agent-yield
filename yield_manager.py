@@ -59,6 +59,16 @@ class YieldManager:
             self._uniswap = UniswapV3(self.client)
         return self._uniswap
 
+    # ------------------------------------------------------------ auto-refuel
+    def ensure_usdc_balance(self) -> Optional[Dict[str, Any]]:
+        """
+        Se in modalita' on-chain e il saldo USDC e' insufficiente,
+        ma c'e' ETH spendibile oltre la riserva gas, effettua l'auto-refuel.
+        """
+        if self.paper or not self.client:
+            return None
+        return self.uniswap.auto_refuel_usdc()
+
     def prices(self) -> Dict[str, float]:
         """Prezzo in USD degli asset gestiti (USDC = 1 per definizione)."""
         if self._prices is None:

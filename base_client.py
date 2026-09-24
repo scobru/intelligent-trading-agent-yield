@@ -34,6 +34,27 @@ ERC20_ABI = [
      "name": "approve", "outputs": [{"name": "", "type": "bool"}], "type": "function"},
 ]
 
+WETH_ABI = [
+    {
+        "constant": False,
+        "inputs": [],
+        "name": "deposit",
+        "outputs": [],
+        "payable": True,
+        "stateMutability": "payable",
+        "type": "function",
+    },
+    {
+        "constant": False,
+        "inputs": [{"name": "wad", "type": "uint256"}],
+        "name": "withdraw",
+        "outputs": [],
+        "payable": False,
+        "stateMutability": "nonpayable",
+        "type": "function",
+    },
+]
+
 MAX_UINT256 = 2 ** 256 - 1
 
 
@@ -165,6 +186,50 @@ class BaseClient:
 
         return problems
 
+    # ------------------------------------------------------------ WETH wrap/unwrap
+    def wrap_eth(self, eth_amount: float) -> Dict[str, Any]:
+        """
+        Deposita ETH nativo nel contratto WETH canonico su Base (1:1).
+        """
+        self._require_signer()
+        amount_wei = int(eth_amount * 1e18)
+        if amount_wei <= 0:
+            raise BaseChainError("Importo ETH non valido per wrap")
+
+        weth_contract = self.w3.eth.contract(
+            address=Web3.to_checksum_address(config.WETH), abi=WETH_ABI
+        )
+        tx = weth_contract.functions.deposit().build_transaction({
+            "from": self.address,
+            "value": amount_wei,
+            "nonce": self.w3.eth.get_transaction_count(self.address),
+            "chainId": config.CHAIN_ID,
+        })
+        tx.pop("maxFeePerGas", None)
+        tx.pop("maxPriorityFeePerGas", None)
+        return self.send_transaction(tx, description=f"wrap {eth_amount:.5f} ETH -> WETH")
+
+    def unwrap_weth(self, weth_amount: float) -> Dict[str, Any]:
+        """
+        Ritira WETH per ricevere ETH nativo 1:1.
+        """
+        self._require_signer()
+        amount_wei = int(weth_amount * 1e18)
+        if amount_wei <= 0:
+            raise BaseChainError("Importo WETH non valido per unwrap")
+
+        weth_contract = self.w3.eth.contract(
+            address=Web3.to_checksum_address(config.WETH), abi=WETH_ABI
+        )
+        tx = weth_contract.functions.withdraw(amount_wei).build_transaction({
+            "from": self.address,
+            "nonce": self.w3.eth.get_transaction_count(self.address),
+            "chainId": config.CHAIN_ID,
+        })
+        tx.pop("maxFeePerGas", None)
+        tx.pop("maxPriorityFeePerGas", None)
+        return self.send_transaction(tx, description=f"unwrap {weth_amount:.5f} WETH -> ETH")
+
     # ------------------------------------------------------------ transazioni
     def _require_signer(self):
         if not self.account:
@@ -199,7 +264,11 @@ class BaseClient:
             try:
                 tx["gas"] = int(self.w3.eth.estimate_gas(tx) * 1.25)
             except Exception as exc:
-                raise BaseChainError(f"Stima gas fallita per '{description}': {exc}") from exc
+                if config.DRY_RUN:
+                    logger.debug("[DRY-RUN] Stima gas fallita (normale se senza stato on-chain): %s", exc)
+                    tx["gas"] = 250_000
+                else:
+                    raise BaseChainError(f"Stima gas fallita per '{description}': {exc}") from exc
 
         if config.DRY_RUN:
             logger.info("[DRY-RUN] transazione non inviata: %s", description)

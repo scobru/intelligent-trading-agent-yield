@@ -300,3 +300,87 @@ class UniswapV3:
             "slippage_bps": slippage_bps,
         })
         return result
+
+    # ------------------------------------------------------------ auto-refuel USDC
+    def swap_eth_to_usdc(self, eth_amount: float, slippage_bps: int = None) -> Dict[str, Any]:
+        """
+        Converte un ammontare di ETH in USDC:
+        1. Se il wallet ha gia' abbastanza WETH, usa WETH. Altrimenti wrappa l'ETH nativo mancante in WETH (1:1).
+        2. Esegue swap Uniswap V3 WETH -> USDC.
+        """
+        if eth_amount <= 0:
+            raise BaseChainError("Importo ETH non valido per swap in USDC")
+
+        slippage_bps = slippage_bps or config.DEFAULT_SLIPPAGE_BPS
+        amount_wei = int(eth_amount * 1e18)
+
+        # Controlla saldo WETH disponibile
+        weth_raw = self.client.balance_of(config.WETH)
+        wrap_needed = amount_wei - weth_raw
+
+        wrap_res = None
+        if wrap_needed > 0:
+            wrap_eth_amount = wrap_needed / 1e18
+            logger.info("Wrap di %.5f ETH in WETH per rifornimento USDC...", wrap_eth_amount)
+            wrap_res = self.client.wrap_eth(wrap_eth_amount)
+
+        # Cerca rotta WETH -> USDC
+        route = self.best_route(config.WETH, config.USDC, amount_wei)
+        if not route or route.amount_out <= 0:
+            raise BaseChainError("Impossibile trovare una rotta Uniswap V3 per WETH -> USDC")
+
+        swap_res = self.swap(route, slippage_bps=slippage_bps)
+        swap_res["wrap_tx"] = wrap_res.get("tx_hash") if wrap_res else None
+        swap_res["eth_swapped"] = eth_amount
+        usdc_est = route.amount_out / (10 ** 6)
+        logger.info(
+            "Swap completato: %.5f ETH -> ~%.2f USDC (tx: %s)",
+            eth_amount, usdc_est, swap_res.get("tx_hash")
+        )
+        return swap_res
+
+    def auto_refuel_usdc(
+        self,
+        gas_reserve: float = None,
+        min_swap_eth: float = None,
+        threshold_usdc: float = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Se il saldo USDC nel wallet e' sotto la soglia (default config.USDC_AUTO_SWAP_THRESHOLD),
+        e c'e' ETH nativo in eccesso rispetto alla riserva per gas (default config.ETH_GAS_RESERVE),
+        swappa in automatico l'eccesso di ETH in USDC tenendosi l'ETH necessario per le fee.
+        """
+        if not getattr(config, "AUTO_SWAP_ETH_TO_USDC", True):
+            return None
+
+        gas_reserve = gas_reserve if gas_reserve is not None else getattr(config, "ETH_GAS_RESERVE", 0.003)
+        min_swap_eth = min_swap_eth if min_swap_eth is not None else getattr(config, "MIN_ETH_SWAP_AMOUNT", 0.002)
+        threshold_usdc = threshold_usdc if threshold_usdc is not None else getattr(config, "USDC_AUTO_SWAP_THRESHOLD", 5.0)
+
+        usdc_bal = self.client.balance_of_float(config.USDC)
+        if usdc_bal >= threshold_usdc:
+            return None
+
+        eth_bal = self.client.eth_balance()
+        weth_bal = self.client.balance_of_float(config.WETH)
+
+        # Calcola ETH spendibile preservando la riserva per il gas nativo
+        swappable_native_eth = max(0.0, eth_bal - gas_reserve)
+        total_swappable_eth = swappable_native_eth + weth_bal
+
+        if total_swappable_eth < min_swap_eth:
+            logger.info(
+                "Auto-refuel USDC saltato: USDC=%.2f, ETH=%.5f, WETH=%.5f (riserva gas=%.5f, disponibile=%.5f < min=%.5f)",
+                usdc_bal, eth_bal, weth_bal, gas_reserve, total_swappable_eth, min_swap_eth
+            )
+            return None
+
+        logger.info(
+            "Auto-refuel USDC attivato: USDC=%.2f < soglia=%.2f. ETH=%.5f (riserva gas=%.5f), WETH=%.5f -> swappo %.5f ETH/WETH in USDC",
+            usdc_bal, threshold_usdc, eth_bal, gas_reserve, weth_bal, total_swappable_eth
+        )
+        try:
+            return self.swap_eth_to_usdc(total_swappable_eth)
+        except Exception as exc:
+            logger.error("Errore durante auto-refuel ETH -> USDC: %s", exc)
+            return None

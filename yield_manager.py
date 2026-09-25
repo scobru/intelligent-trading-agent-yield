@@ -402,7 +402,7 @@ class YieldManager:
         Se target_usdc <= 0, ritira tutte le posizioni.
         Altrimenti ritira fino a raggiungere target_usdc.
         """
-        status = self.status(self.universe or [])
+        status = self.get_account_status()
         positions = list(status.get("positions", []))
         if not positions:
             idle = float(status.get("usdc_balance", 0.0))
@@ -429,7 +429,7 @@ class YieldManager:
             except Exception as exc:
                 logger.error("Errore ritiro da pool %s: %s", pos.get("pool_id"), exc)
 
-        new_status = self.status(self.universe or [])
+        new_status = self.get_account_status()
         wallet_usdc = float(new_status.get("usdc_balance", 0.0))
         return {
             "status": "success",

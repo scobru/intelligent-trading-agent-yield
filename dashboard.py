@@ -309,7 +309,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
-        elif path == "/api/data":
+        elif path in ("/api/data", "/api/status"):
             try:
                 data = db_utils.fetch_dashboard_data()
             except Exception as exc:
@@ -317,6 +317,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             data["run_enabled"] = bool(RUN_TOKEN)
             data["meta"] = build_meta(data)
+            data["is_paused"] = db_utils.is_bot_paused()
+            data["pause_info"] = db_utils.get_pause_info()
             self._json(200, data)
         elif path == "/health":
             self._json(200, {"status": "healthy", "service": "yield-dashboard"})
@@ -339,28 +341,68 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
+    def _is_auth_valid(self) -> bool:
+        if not RUN_TOKEN:
+            return False
+        token = self.headers.get("X-Run-Token", "") or self.headers.get("X-Admin-Token", "")
+        if not token and "Authorization" in self.headers:
+            auth = self.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                token = auth[7:].strip()
+            else:
+                token = auth.strip()
+        return bool(token and hmac.compare_digest(token, RUN_TOKEN))
+
     def do_POST(self):
-        if urlparse(self.path).path != "/api/run":
+        path = urlparse(self.path).path
+        if path not in ("/api/run", "/api/pause", "/api/resume"):
             self.send_response(404)
             self.end_headers()
             return
-        if not RUN_TOKEN:
-            self._json(403, {"message": "Esecuzione da dashboard disattivata: imposta DASHBOARD_RUN_TOKEN."})
-            return
-        if not hmac.compare_digest(self.headers.get("X-Run-Token", ""), RUN_TOKEN):
-            self._json(403, {"message": "Token non valido."})
-            return
-        if not _run_lock.acquire(blocking=False):
-            self._json(409, {"message": "Un ciclo e' gia' in corso."})
+
+        if not self._is_auth_valid():
+            self._json(403, {"message": "Token non valido o DASHBOARD_RUN_TOKEN non configurato."})
             return
 
-        def _run():
+        if path == "/api/pause":
+            reason = "Pausa richiesta da API"
             try:
-                subprocess.run([sys.executable, "main.py"], check=False)
-            finally:
-                _run_lock.release()
-        threading.Thread(target=_run, daemon=True).start()
-        self._json(200, {"message": "Ciclo avviato: la dashboard si aggiorna da sola."})
+                clen = int(self.headers.get("Content-Length", 0))
+                if clen > 0:
+                    body = json.loads(self.rfile.read(clen).decode("utf-8"))
+                    reason = body.get("reason", reason)
+            except Exception:
+                pass
+            db_utils.set_bot_paused(True, reason=reason)
+            self._json(200, {"status": "success", "is_paused": True, "message": f"Bot in pausa: {reason}"})
+            return
+
+        if path == "/api/resume":
+            db_utils.set_bot_paused(False)
+            self._json(200, {"status": "success", "is_paused": False, "message": "Bot riattivato con successo."})
+            return
+
+        if path == "/api/run":
+            if db_utils.is_bot_paused():
+                pinfo = db_utils.get_pause_info()
+                self._json(200, {
+                    "status": "paused",
+                    "is_paused": True,
+                    "message": f"Bot attualmente in PAUSA ({pinfo.get('reason', 'Pausa attiva')}). Ciclo ignorato."
+                })
+                return
+
+            if not _run_lock.acquire(blocking=False):
+                self._json(409, {"message": "Un ciclo e' gia' in corso."})
+                return
+
+            def _run():
+                try:
+                    subprocess.run([sys.executable, "main.py"], check=False)
+                finally:
+                    _run_lock.release()
+            threading.Thread(target=_run, daemon=True).start()
+            self._json(200, {"message": "Ciclo avviato: la dashboard si aggiorna da sola."})
 
 
 def run_dashboard(port: int = PORT):

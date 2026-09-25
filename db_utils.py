@@ -74,6 +74,12 @@ CREATE TABLE IF NOT EXISTS errors (
     traceback TEXT,
     context_json TEXT
 );
+
+CREATE TABLE IF NOT EXISTS bot_control (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -199,3 +205,51 @@ def fetch_dashboard_data(path: str = None, limit: int = 50) -> Dict[str, Any]:
         ],
         "errors": [dict(r) for r in errors],
     }
+
+
+def is_bot_paused() -> bool:
+    """Verifica se il bot yield e' in stato di pausa."""
+    try:
+        init_db()
+        with get_connection() as conn:
+            row = conn.execute("SELECT value FROM bot_control WHERE key = 'is_paused'").fetchone()
+            if row:
+                return str(row["value"]).lower() in ("1", "true", "yes")
+    except Exception:
+        pass
+    return False
+
+
+def get_pause_info() -> Dict[str, Any]:
+    """Recupera dettagli sullo stato di pausa del bot."""
+    info = {"is_paused": False, "reason": "", "updated_at": ""}
+    try:
+        init_db()
+        with get_connection() as conn:
+            rows = conn.execute("SELECT key, value, updated_at FROM bot_control WHERE key IN ('is_paused', 'pause_reason')").fetchall()
+            for row in rows:
+                if row["key"] == "is_paused":
+                    info["is_paused"] = str(row["value"]).lower() in ("1", "true", "yes")
+                    info["updated_at"] = row["updated_at"]
+                elif row["key"] == "pause_reason":
+                    info["reason"] = row["value"]
+    except Exception:
+        pass
+    return info
+
+
+def set_bot_paused(paused: bool, reason: str = "") -> None:
+    """Imposta o rimuove lo stato di pausa del bot yield."""
+    init_db()
+    now = datetime.now(timezone.utc).isoformat()
+    val = "1" if paused else "0"
+    with get_connection() as conn:
+        conn.execute("""
+            INSERT INTO bot_control (key, value, updated_at) VALUES ('is_paused', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;
+        """, (val, now))
+        conn.execute("""
+            INSERT INTO bot_control (key, value, updated_at) VALUES ('pause_reason', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at;
+        """, (reason or ("Pausa da Coordinatore/Operatore" if paused else "Operativo"), now))
+

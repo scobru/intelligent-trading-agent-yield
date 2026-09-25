@@ -38,6 +38,11 @@ def _positions_for_prompt(status):
 
 
 def run_cycle():
+    if db_utils.is_bot_paused():
+        pinfo = db_utils.get_pause_info()
+        print(f"⏸️ Bot Yield in stato di PAUSA ({pinfo.get('reason', 'Pausa attiva')}). Ciclo ignorato.")
+        return None
+
     print(f"🚀 Avvio Yield Agent su Base (wallet: {config.WALLET_ADDRESS})")
     if config.PAPER_TRADING:
         print(f"📝 PAPER: portafoglio virtuale, rendimenti reali dei pool. "

@@ -355,7 +355,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
-        if path not in ("/api/run", "/api/pause", "/api/resume"):
+        if path not in ("/api/run", "/api/pause", "/api/resume", "/api/release_funds"):
             self.send_response(404)
             self.end_headers()
             return
@@ -403,6 +403,9 @@ class Handler(BaseHTTPRequestHandler):
                     _run_lock.release()
             threading.Thread(target=_run, daemon=True).start()
             self._json(200, {"message": "Ciclo avviato: la dashboard si aggiorna da sola."})
+
+        if path == "/api/release_funds":
+            self._json(200, {"status": "success", "message": "Svincolo USDC non implementato per questo agente", "released_usd": 0.0})
 
 
 def run_dashboard(port: int = PORT):

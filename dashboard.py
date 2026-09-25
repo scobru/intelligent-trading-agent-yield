@@ -405,7 +405,24 @@ class Handler(BaseHTTPRequestHandler):
             self._json(200, {"message": "Ciclo avviato: la dashboard si aggiorna da sola."})
 
         if path == "/api/release_funds":
-            self._json(200, {"status": "success", "message": "Svincolo USDC non implementato per questo agente", "released_usd": 0.0})
+            target_amount = 0.0
+            try:
+                clen = int(self.headers.get("Content-Length", 0))
+                if clen > 0:
+                    body = json.loads(self.rfile.read(clen).decode("utf-8"))
+                    target_amount = float(body.get("amount_usd", 0.0) or 0.0)
+            except Exception:
+                pass
+            try:
+                from base_client import BaseClient
+                from yield_manager import YieldManager
+                client = BaseClient()
+                manager = YieldManager(client)
+                res = manager.release_funds(target_usdc=target_amount)
+                self._json(200, res)
+            except Exception as exc:
+                self._json(500, {"status": "error", "message": str(exc)})
+            return
 
 
 def run_dashboard(port: int = PORT):

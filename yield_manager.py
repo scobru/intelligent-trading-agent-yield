@@ -396,6 +396,49 @@ class YieldManager:
         result["trigger"] = trigger
         return result
 
+    def release_funds(self, target_usdc: float = 0.0) -> Dict[str, Any]:
+        """
+        Ritira capitale dai pool di rendimento (Aave, Moonwell, etc.) per liberare USDC nel wallet.
+        Se target_usdc <= 0, ritira tutte le posizioni.
+        Altrimenti ritira fino a raggiungere target_usdc.
+        """
+        status = self.status(self.universe or [])
+        positions = list(status.get("positions", []))
+        if not positions:
+            idle = float(status.get("usdc_balance", 0.0))
+            return {
+                "status": "success",
+                "message": "Nessuna posizione di rendimento attiva",
+                "released_usd": 0.0,
+                "usdc_balance": round(idle, 2),
+                "withdrawals": []
+            }
+
+        withdrawals = []
+        total_freed = 0.0
+
+        for pos in positions:
+            if target_usdc > 0 and total_freed >= target_usdc:
+                break
+            try:
+                logger.info("Ritiro da pool %s per release_funds...", pos.get("pool_id"))
+                res = self.liquidate(pos, trigger="svincolo fondi")
+                freed = float(res.get("amount_usd", pos.get("value_usd", 0.0)))
+                total_freed += freed
+                withdrawals.append({"pool_id": pos.get("pool_id"), "result": res})
+            except Exception as exc:
+                logger.error("Errore ritiro da pool %s: %s", pos.get("pool_id"), exc)
+
+        new_status = self.status(self.universe or [])
+        wallet_usdc = float(new_status.get("usdc_balance", 0.0))
+        return {
+            "status": "success",
+            "message": f"Liberati ${total_freed:.2f} USDC (saldo attuale: ${wallet_usdc:.2f})",
+            "released_usd": round(total_freed, 2),
+            "usdc_balance": round(wallet_usdc, 2),
+            "withdrawals": withdrawals
+        }
+
     # -------- deposito
     def _validate_deposit(self, pool_id: str, amount_usd: float, status: Dict[str, Any],
                           freed_usd: float = 0.0, leaving: Optional[Dict[str, Any]] = None):

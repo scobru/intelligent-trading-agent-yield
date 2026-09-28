@@ -104,13 +104,18 @@ media a 30 giorni: un picco di utilizzo non deve far spostare il capitale.
 
 Quando `ENABLE_LOOPING=true`, l'agente può amplificare lo staking yield su asset liquidi ancorati a ETH (**wstETH** e **cbETH**) su Aave V3:
 
-- **Meccanica**: deposita wstETH/cbETH come collateral, prende in prestito WETH e rideposita per raggiungere una leva conservativa (default `LOOP_MAX_LEVERAGE=2.2x`).
-- **Nessun rischio cross-asset**: collateral e debito sono entrambi denominati in ETH (nessun rischio di liquidazione da oscillazione del prezzo ETH/USD).
+- **Meccanica**: deposita wstETH/cbETH come collateral, prende in prestito WETH, lo ricompra in LST e rideposita, **a giri**, fino alla leva voluta (default `LOOP_MAX_LEVERAGE=2.2x`). Ogni prestito resta dentro l'LTV del collaterale accumulato fino a quel momento: un prestito unico da (leva − 1) × capitale verrebbe rifiutato da Aave.
+- **Dati dalla chain**: tassi di supply e borrow, LTV e soglia di liquidazione (della categoria e-mode giusta, riconosciuta da sola), cap di supply e WETH disponibile, prezzi dell'oracolo Aave. Lo staking arriva da DefiLlama (pool Lido e Coinbase su Ethereum), con `staking_yield` di `config.py` come riserva.
+- **Leva effettiva** = la minore fra `LOOP_MAX_LEVERAGE`, quella che lascia l'HF a `LOOP_TARGET_HEALTH_FACTOR` e quella raggiungibile con l'LTV.
 - **Formula Net APY**:
   $$\text{Net APY} = (\text{Staking Yield} + \text{Supply APY}) \times L - \text{Borrow APY} \times (L - 1)$$
+- **Valore della posizione** = collaterale − debito (prezzi dell'oracolo Aave), non il solo collaterale.
 - **Sicurezza e Health Factor**:
-  - Target iniziale: `LOOP_TARGET_HEALTH_FACTOR=1.55` (LTV ~50-55% su soglia di liquidazione Aave >85%).
-  - Uscita automatica di sicurezza: se l'Health Factor on-chain scende sotto `LOOP_MIN_HEALTH_FACTOR=1.30`, l'esecutore attiva una **liquidazione/unwind automatica** immediata a tutela del capitale, senza attendere il ciclo LLM.
+  - Target iniziale: `LOOP_TARGET_HEALTH_FACTOR=1.55`.
+  - Uscita automatica: se l'HF scende sotto `LOOP_MIN_HEALTH_FACTOR=1.30` il loop viene smontato senza attendere il ciclo LLM. Si usa il più basso fra l'HF del conto Aave e quello del solo loop.
+  - Lo smontaggio va a giri (withdraw LST → swap in WETH → repay) senza mai portare l'HF sotto la soglia, poi riporta tutto in USDC.
+- **Rischio**: collaterale e debito sono entrambi in ETH, quindi il prezzo di ETH non avvicina la liquidazione (la avvicinano un depeg dell'LST o un tasso di prestito che esplode), ma **il valore in dollari del loop segue ETH**.
+- Spento di default (`ENABLE_LOOPING=false`).
 
 ---
 

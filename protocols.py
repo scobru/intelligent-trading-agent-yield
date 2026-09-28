@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional, Tuple
 from web3 import Web3
 
 import config
+import loop_math
 from base_client import MAX_UINT256, BaseClient
 
 logger = logging.getLogger(__name__)
@@ -89,6 +90,51 @@ VARIABLE_DEBT_TOKEN_ABI = [
      "outputs": [{"name": "", "type": "address"}], "stateMutability": "view", "type": "function"},
     {"inputs": [{"name": "user", "type": "address"}], "name": "balanceOf",
      "outputs": [{"name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"},
+]
+
+# Solo per il looping: e-mode, oracolo e totalSupply per i cap
+LOOP_POOL_ABI = [
+    {"inputs": [{"name": "user", "type": "address"}], "name": "getUserEMode",
+     "outputs": [{"name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"},
+    {"inputs": [{"name": "categoryId", "type": "uint8"}], "name": "setUserEMode",
+     "outputs": [], "stateMutability": "nonpayable", "type": "function"},
+    {"inputs": [], "name": "ADDRESSES_PROVIDER",
+     "outputs": [{"name": "", "type": "address"}], "stateMutability": "view", "type": "function"},
+    # Aave >= 3.2
+    {"inputs": [{"name": "id", "type": "uint8"}], "name": "getEModeCategoryCollateralConfig",
+     "outputs": [{"components": [
+         {"name": "ltv", "type": "uint16"},
+         {"name": "liquidationThreshold", "type": "uint16"},
+         {"name": "liquidationBonus", "type": "uint16"}], "name": "", "type": "tuple"}],
+     "stateMutability": "view", "type": "function"},
+    {"inputs": [{"name": "id", "type": "uint8"}], "name": "getEModeCategoryCollateralBitmap",
+     "outputs": [{"name": "", "type": "uint128"}], "stateMutability": "view", "type": "function"},
+    {"inputs": [{"name": "id", "type": "uint8"}], "name": "getEModeCategoryBorrowableBitmap",
+     "outputs": [{"name": "", "type": "uint128"}], "stateMutability": "view", "type": "function"},
+    # Aave 3.0 / 3.1
+    {"inputs": [{"name": "id", "type": "uint8"}], "name": "getEModeCategoryData",
+     "outputs": [{"components": [
+         {"name": "ltv", "type": "uint16"},
+         {"name": "liquidationThreshold", "type": "uint16"},
+         {"name": "liquidationBonus", "type": "uint16"},
+         {"name": "priceSource", "type": "address"},
+         {"name": "label", "type": "string"}], "name": "", "type": "tuple"}],
+     "stateMutability": "view", "type": "function"},
+]
+
+AAVE_PROVIDER_ABI = [
+    {"inputs": [], "name": "getPriceOracle", "outputs": [{"name": "", "type": "address"}],
+     "stateMutability": "view", "type": "function"},
+]
+
+AAVE_ORACLE_ABI = [
+    {"inputs": [{"name": "asset", "type": "address"}], "name": "getAssetPrice",
+     "outputs": [{"name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"},
+]
+
+TOTAL_SUPPLY_ABI = [
+    {"inputs": [], "name": "totalSupply", "outputs": [{"name": "", "type": "uint256"}],
+     "stateMutability": "view", "type": "function"},
 ]
 
 ERC4626_ABI = [
@@ -281,6 +327,26 @@ class AaveV3LoopAdapter(Adapter):
         if self.var_debt_token == ZERO_ADDRESS:
             raise ValueError("borrow asset non listato su Aave V3")
         self.var_debt_contract = self.w3.eth.contract(address=self.var_debt_token, abi=VARIABLE_DEBT_TOKEN_ABI)
+        self.borrow_a_token = _cs(res_borrow[8])
+
+        # Parametri di rischio letti dalla chain: LTV e soglia di liquidazione
+        # (quelli della categoria e-mode, se ce n'e' una per questa coppia)
+        self.coll_cfg = dict(loop_math.parse_reserve_config(res_collateral[0]), id=int(res_collateral[7]))
+        self.borrow_cfg = dict(loop_math.parse_reserve_config(res_borrow[0]), id=int(res_borrow[7]))
+        self.loop_pool = self.w3.eth.contract(address=self.address, abi=LOOP_POOL_ABI)
+        self._oracle = None
+        self._emode_cache: Dict[int, Optional[Dict[str, Any]]] = {}
+        try:
+            self.emode = loop_math.pick_emode(self._emode_category, self.coll_cfg, self.borrow_cfg)
+        except Exception as exc:
+            logger.warning("Categorie e-mode non leggibili: %s", exc)
+            self.emode = None
+        self.ltv = self.emode["ltv"] if self.emode else self.coll_cfg["ltv"]
+        self.liq_threshold = self.emode["lt"] if self.emode else self.coll_cfg["lt"]
+        # la leva richiesta scende se con quella l'HF all'ingresso sarebbe troppo basso
+        # o se l'LTV non permette di arrivarci
+        self.requested_leverage = self.leverage
+        self.leverage = loop_math.safe_leverage(self.ltv, self.liq_threshold, self.leverage)
 
     def balance_raw(self, owner: str = None) -> int:
         """Saldo di collateral depositato (aToken)."""
@@ -305,25 +371,108 @@ class AaveV3LoopAdapter(Adapter):
         }
 
     def health_factor(self, owner: str = None) -> float:
-        return self.user_account_data(owner)["health_factor"]
+        """
+        Il piu' basso fra l'HF del conto Aave e quello del solo loop: se sul
+        conto ci sono altri depositi, l'HF del conto e' piu' alto di quello
+        che conta per decidere se smontare il loop.
+        """
+        account = self.user_account_data(owner)["health_factor"]
+        try:
+            return min(account, self.position(owner)["health_factor"])
+        except Exception as exc:
+            logger.warning("HF del loop non calcolabile, uso quello del conto: %s", exc)
+            return account
+
+    # -------- e-mode, oracolo, posizione
+    def _emode_category(self, cat: int) -> Optional[Dict[str, Any]]:
+        if cat in self._emode_cache:
+            return self._emode_cache[cat]
+        info = None
+        fn = self.loop_pool.functions
+        try:
+            ltv, lt, _ = fn.getEModeCategoryCollateralConfig(cat).call()
+            if int(lt) > 0:
+                info = {"id": cat, "ltv": int(ltv) / 10_000, "lt": int(lt) / 10_000,
+                        "collateral": int(fn.getEModeCategoryCollateralBitmap(cat).call()),
+                        "borrowable": int(fn.getEModeCategoryBorrowableBitmap(cat).call())}
+        except Exception:
+            try:
+                data = fn.getEModeCategoryData(cat).call()
+                if int(data[1]) > 0:
+                    info = {"id": cat, "ltv": int(data[0]) / 10_000, "lt": int(data[1]) / 10_000,
+                            "legacy": True}
+            except Exception:
+                info = None
+        self._emode_cache[cat] = info
+        return info
+
+    def user_emode(self, owner: str = None) -> int:
+        return int(self.loop_pool.functions.getUserEMode(self._owner(owner)).call())
+
+    def set_emode_fn(self, category: int):
+        return self.loop_pool.functions.setUserEMode(int(category))
+
+    def oracle_price(self, asset: str) -> float:
+        """Prezzo in USD usato da Aave per l'health factor."""
+        if self._oracle is None:
+            provider = self.loop_pool.functions.ADDRESSES_PROVIDER().call()
+            oracle = self.w3.eth.contract(address=provider, abi=AAVE_PROVIDER_ABI).functions.getPriceOracle().call()
+            self._oracle = self.w3.eth.contract(address=oracle, abi=AAVE_ORACLE_ABI)
+        return int(self._oracle.functions.getAssetPrice(_cs(asset)).call()) / 1e8
+
+    def position(self, owner: str = None) -> Dict[str, Any]:
+        """Collaterale e debito del loop in USD (prezzi dell'oracolo Aave) e il suo HF."""
+        coll_raw = self.balance_raw(owner)
+        debt_raw = self.debt_raw(owner)
+        coll_price = self.oracle_price(self.collateral_asset)
+        debt_price = self.oracle_price(self.borrow_asset)
+        lt = self.liq_threshold
+        if self.emode and self.user_emode(owner) != self.emode["id"]:
+            lt = self.coll_cfg["lt"]
+        coll_usd = coll_raw / 10 ** self.client.decimals(self.collateral_asset) * coll_price
+        debt_usd = debt_raw / 10 ** self.client.decimals(self.borrow_asset) * debt_price
+        return {
+            "coll_raw": coll_raw, "debt_raw": debt_raw,
+            "coll_price": coll_price, "debt_price": debt_price,
+            "collateral_usd": coll_usd, "debt_usd": debt_usd,
+            "equity_usd": coll_usd - debt_usd, "lt": lt,
+            "health_factor": loop_math.health_factor(coll_usd, debt_usd, lt),
+        }
+
+    def unavailable_reason(self) -> str:
+        """Perche' adesso non si puo' aprire un loop ('' = si puo')."""
+        c, b = self.coll_cfg, self.borrow_cfg
+        if not c["active"] or c["frozen"] or c["paused"]:
+            return f"riserva {self.collateral_symbol} non attiva, congelata o in pausa"
+        if not b["active"] or b["frozen"] or b["paused"] or not b["borrowing"]:
+            return f"prestiti {self.borrow_symbol} non disponibili"
+        if self.ltv <= 0:
+            return f"{self.collateral_symbol} non e' collaterale su Aave (LTV 0)"
+        if self.leverage < 1.2:
+            return f"leva raggiungibile {self.leverage:.2f}x troppo bassa (LTV {self.ltv:.0%})"
+        if c["supply_cap"]:
+            supplied = self.w3.eth.contract(address=self.a_token, abi=TOTAL_SUPPLY_ABI).functions.totalSupply().call()
+            if supplied / 10 ** self.client.decimals(self.collateral_asset) >= c["supply_cap"] * 0.98:
+                return f"supply cap di {self.collateral_symbol} pieno"
+        if self.client.balance_of(self.borrow_asset, self.borrow_a_token) <= 0:
+            return f"nessun {self.borrow_symbol} disponibile da prendere in prestito"
+        return ""
 
     def rates(self) -> Dict[str, float]:
-        """Calcola i tassi componenti e il Net APY alla leva specificata."""
-        supply_apr = self.collateral_liquidity_rate / 1e27
-        supply_apy = ((1 + supply_apr / SECONDS_PER_YEAR) ** SECONDS_PER_YEAR - 1) * 100
-
-        borrow_apr = self.variable_borrow_rate / 1e27
-        borrow_apy = ((1 + borrow_apr / SECONDS_PER_YEAR) ** SECONDS_PER_YEAR - 1) * 100
-
+        """Tassi on-chain e APY netto alla leva effettiva."""
+        supply_apy = loop_math.rate_to_apy(self.collateral_liquidity_rate)
+        borrow_apy = loop_math.rate_to_apy(self.variable_borrow_rate)
         l = self.leverage
-        net_apy = (self.staking_yield + supply_apy) * l - borrow_apy * (l - 1.0)
-
         return {
             "staking_yield": round(self.staking_yield, 4),
             "supply_apy": round(supply_apy, 4),
             "borrow_apy": round(borrow_apy, 4),
             "leverage": round(l, 2),
-            "net_apy": round(net_apy, 4),
+            "net_apy": round(loop_math.net_apy(l, self.staking_yield + supply_apy, borrow_apy), 4),
+            "ltv": self.ltv,
+            "liq_threshold": self.liq_threshold,
+            "emode": self.emode["id"] if self.emode else 0,
+            "hf_target": round(loop_math.health_factor(l, l - 1, self.liq_threshold), 4) if l > 1 else None,
         }
 
     def onchain_apy(self) -> Optional[float]:

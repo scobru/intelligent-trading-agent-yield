@@ -36,6 +36,19 @@ class LoopApyCalculationTest(unittest.TestCase):
 
 
 class LoopScannerTest(unittest.TestCase):
+    def setUp(self):
+        # il looping e' spento di default: qui si testa la costruzione dei pool
+        self._saved = config.ENABLE_LOOPING
+        config.ENABLE_LOOPING = True
+        # niente rete: lo staking viene dai valori di riserva di config
+        self._staking = patch("loop_math.staking_apys", return_value={
+            s: m["staking_yield"] for s, m in config.KNOWN_ASSETS.items() if "staking_yield" in m})
+        self._staking.start()
+
+    def tearDown(self):
+        config.ENABLE_LOOPING = self._saved
+        self._staking.stop()
+
     def test_build_loop_pools_with_wsteth_and_cbeth(self):
         mock_pools = [
             {

@@ -12,6 +12,7 @@ import time
 from typing import Any, Dict, List, Optional
 
 import config
+import looping
 import protocols
 import yield_scanner
 from base_client import BaseChainError, BaseClient
@@ -50,6 +51,7 @@ class YieldManager:
         self.universe: List[Dict[str, Any]] = []
         self._prices: Optional[Dict[str, float]] = None
         self._uniswap = None
+        self.loops = looping.LoopManager(self) if config.LOOP_ENABLED else None
 
     # ------------------------------------------------------------ prezzi
     @property
@@ -66,6 +68,8 @@ class YieldManager:
             # anche gli asset delle posizioni gia' aperte: se DEPOSIT_ASSETS
             # e' stato ristretto dopo, vanno comunque valorizzate
             held = {p.get("asset") for p in self.store.positions.values()}
+            if getattr(self, "loops", None):
+                held.add("WETH")   # i loop si valutano in ETH
             for sym, meta in config.KNOWN_ASSETS.items():
                 if sym == "USDC" or (sym not in config.DEPOSIT_ASSETS and sym not in held):
                     continue
@@ -95,6 +99,12 @@ class YieldManager:
             else:
                 pool["adapter"] = None
                 pool["adapter_reason"] = reason
+        if getattr(self, "loops", None):
+            try:
+                self.loops.refresh()
+                universe.extend(self.loops.pseudo_pools())
+            except Exception as exc:
+                logger.warning("Mercati di looping non disponibili: %s", exc)
         self.universe = universe
         return universe
 
@@ -124,13 +134,22 @@ class YieldManager:
             current.setdefault(pool["pool_id"], pool)
 
         positions: List[Dict[str, Any]] = []
+        loops = getattr(self, "loops", None)
         if self.paper:
             self.paper.accrue({pid: current[pid]["effective_apy"] for pid in held_ids if pid in current})
+            if loops:
+                loops.accrue_paper()
             usdc = self.paper.usdc
             eth = self.paper.eth
             idle_assets: Dict[str, float] = {}
             for pid, ppos in self.paper.positions.items():
                 meta = self.store.get(pid) or {}
+                if looping.is_loop(pid):
+                    row = loops.position_row(pid, meta) if loops else None
+                    if row is None:
+                        row = self._position_row(pid, meta, None, ppos["value_usd"], None)
+                    positions.append(row)
+                    continue
                 positions.append(self._position_row(pid, meta, current.get(pid), ppos["value_usd"], None))
         else:
             usdc = self.client.balance_of_float(config.USDC)
@@ -145,6 +164,20 @@ class YieldManager:
 
             # posizioni nel registro
             for pid, meta in list(self.store.positions.items()):
+                if looping.is_loop(pid):
+                    row = None
+                    if loops:
+                        try:
+                            row = loops.position_row(pid, meta)
+                        except Exception as exc:
+                            logger.warning("Loop %s non leggibile: %s", pid, exc)
+                    if row is None:
+                        logger.warning("Loop %s nel registro ma LOOP_ENABLED e' spento o non leggibile", pid)
+                    elif row["value_usd"] < config.DUST_USD and row["loop"]["debt_usd"] <= 0:
+                        self.store.record_withdraw(pid, 1.0)
+                    else:
+                        positions.append(row)
+                    continue
                 adapter = self._adapter_for_position(meta)
                 if not adapter:
                     continue
@@ -196,6 +229,13 @@ class YieldManager:
             "positions": positions,
             "prices": prices,
         }
+        if loops:
+            status["loops"] = {
+                "enabled": True,
+                "max_leverage": config.LOOP_MAX_LEVERAGE,
+                "min_health_factor": config.LOOP_MIN_HEALTH_FACTOR,
+                "markets": list(loops.markets.values()),
+            }
         if self.paper:
             summary = self.paper.summary()
             status["paper"] = summary
@@ -233,7 +273,10 @@ class YieldManager:
             trigger = None
             meta = self.store.get(pos["pool_id"]) or {}
             keys = {pos["pool_id"].lower(), str((meta.get("adapter") or {}).get("address") or "").lower()}
-            if keys & config.POOL_BLOCKLIST:
+            if looping.is_loop(pos["pool_id"]):
+                if getattr(self, "loops", None) and pos.get("loop"):
+                    trigger = self.loops.risk_trigger(pos, meta)
+            elif keys & config.POOL_BLOCKLIST:
                 trigger = "POOL_BLOCKLIST"
             elif pos.get("entry_tvl") and pos.get("tvl_now") is not None:
                 drop = (1 - float(pos["tvl_now"]) / float(pos["entry_tvl"])) * 100
@@ -258,12 +301,17 @@ class YieldManager:
                 in_pool -= freed_usd
             if leaving.get("project") == pool["project"]:
                 in_protocol -= freed_usd
-        return max(0.0, min(
+        caps = [
             config.MAX_DEPOSIT_USD,
             status["usdc_balance"] + freed_usd,
             config.MAX_POOL_PCT * total - in_pool,
             config.MAX_PROTOCOL_PCT * total - in_protocol,
-        ))
+        ]
+        if pool.get("loop"):
+            in_loops = sum(p["value_usd"] for p in status["positions"] if looping.is_loop(p["pool_id"]))
+            caps.append(config.LOOP_MAX_CAPITAL_PCT * total - in_loops)
+            caps.append(pool["loop"].get("capacity_usd", float("inf")))
+        return max(0.0, min(caps))
 
     def _held(self, status: Dict[str, Any], pool_id: str) -> Optional[Dict[str, Any]]:
         pool_id = str(pool_id or "").strip()
@@ -352,6 +400,10 @@ class YieldManager:
                 "symbol": pool["symbol"], "amount_usd": round(amount, 4),
                 "apy": pool["effective_apy"], "reason": decision.get("reason", "")}
 
+        if pool.get("loop"):
+            if not getattr(self, "loops", None):
+                raise RiskRejection("looping disattivato (LOOP_ENABLED=false)")
+            return self.loops.open(pool, amount, base)
         if self.paper:
             res = self.paper.deposit(pool, amount)
             self.store.record_deposit(pool, {"kind": pool["adapter"], "address": pool.get("contract"),
@@ -432,6 +484,10 @@ class YieldManager:
                 "symbol": pos.get("symbol"), "amount_usd": round(amount_usd, 4),
                 "withdraw_portion": fraction, "reason": decision.get("reason", "")}
 
+        if looping.is_loop(pos["pool_id"]):
+            if not getattr(self, "loops", None):
+                raise RiskRejection("looping disattivato (LOOP_ENABLED=false): riattivalo per smontare il loop")
+            return self.loops.close(pos, fraction, base)
         if self.paper:
             res = self.paper.withdraw(pos["pool_id"], fraction)
             self.store.record_withdraw(pos["pool_id"], fraction)
@@ -487,6 +543,8 @@ class YieldManager:
             raise RiskRejection(f"pool di destinazione '{decision.get('pool')}' non nell'universo filtrato")
         if dst["pool_id"] == src["pool_id"]:
             raise RiskRejection("origine e destinazione coincidono")
+        if looping.is_loop(src["pool_id"]) or looping.is_loop(dst["pool_id"]):
+            raise RiskRejection("un loop non si ribilancia: usa withdraw e poi deposit")
 
         if src["held_hours"] < config.MIN_HOLD_HOURS:
             raise RiskRejection(

@@ -86,6 +86,8 @@ class PaperBook:
         now = now or time.time()
         earned = 0.0
         for pool_id, pos in self.positions.items():
+            if pos.get("loop"):
+                continue   # i loop maturano in accrue_loops, con tassi separati
             apy = apy_by_pool.get(pool_id)
             last = float(pos.get("last_accrual", now))
             dt = max(0.0, now - last)
@@ -135,6 +137,89 @@ class PaperBook:
             del self.positions[pool_id]
         else:
             pos["value_usd"] = float(pos["value_usd"]) - gross
+        self.state["usdc"] = self.usdc + net
+        self.state["operations"] = int(self.state.get("operations", 0)) + 1
+        self.save()
+        return {"withdrawn_usd": net, "cost_usd": cost}
+
+    # ------------------------------------------------------------ looping
+    # Un loop si tiene in ETH: collaterale (LST, valutato 1 ETH piu' lo
+    # staking maturato) e debito WETH. Il valore in USD e' il netto per il
+    # prezzo corrente di ETH, quindi si vede anche l'esposizione al prezzo.
+    def open_loop(self, pool_id: str, market: Dict[str, Any], amount_usd: float,
+                  eth_price: float) -> Dict[str, Any]:
+        from looping import health_factor, plan_iterations
+        amount_usd = min(amount_usd, self.usdc)
+        borrows, coll, debt = plan_iterations(1.0, market["leverage"], market["ltv"])
+        # e-mode, approve + swap USDC->LST, approve + supply; poi per giro borrow, swap, supply
+        n_tx = 5 + 3 * len(borrows)
+        cost = self._charge(n_tx, amount_usd * (1 + sum(borrows)))
+        equity_eth = max(0.0, amount_usd - cost) / eth_price
+        self.state["usdc"] = self.usdc - amount_usd
+        now = time.time()
+        self.positions[pool_id] = {
+            "loop": True,
+            "asset": market["asset"],
+            "collateral_eth": equity_eth * coll,
+            "debt_eth": equity_eth * debt,
+            "lt": market["lt"],
+            "value_usd": equity_eth * eth_price,
+            "last_accrual": now,
+            "last_apy": market["net_apy"],
+        }
+        self.state["operations"] = int(self.state.get("operations", 0)) + 1
+        self.save()
+        return {"deposited_usd": equity_eth * eth_price, "cost_usd": cost,
+                "leverage": coll, "iterations": len(borrows),
+                "health_factor": health_factor(coll, debt, market["lt"])}
+
+    def accrue_loops(self, markets: Dict[str, Dict[str, Any]], eth_price: float,
+                     now: float = None) -> float:
+        """Staking sul collaterale, interessi sul debito, poi valutazione al prezzo di ETH."""
+        now = now or time.time()
+        earned = 0.0
+        for pos in self.positions.values():
+            if not pos.get("loop"):
+                continue
+            m = markets.get(pos["asset"]) or {}
+            dt = max(0.0, now - float(pos.get("last_accrual", now)))
+            if dt > 0 and m.get("collateral_apy") is not None and m.get("borrow_apy") is not None:
+                years = dt / SECONDS_PER_YEAR
+                coll = float(pos["collateral_eth"])
+                debt = float(pos["debt_eth"])
+                new_coll = coll * (1 + m["collateral_apy"] / 100) ** years
+                new_debt = debt * (1 + m["borrow_apy"] / 100) ** years
+                earned += ((new_coll - new_debt) - (coll - debt)) * eth_price
+                pos["collateral_eth"], pos["debt_eth"] = new_coll, new_debt
+                pos["last_apy"] = m.get("net_apy")
+                pos["last_accrual"] = now
+            elif dt > 0 and not m:
+                pass   # tassi non letti in questo ciclo: si recupera al prossimo, senza perdere tempo
+            else:
+                pos["last_accrual"] = now
+            pos["value_usd"] = (float(pos["collateral_eth"]) - float(pos["debt_eth"])) * eth_price
+        self.state["yield_earned_usd"] = float(self.state.get("yield_earned_usd", 0.0)) + earned
+        self.save()
+        return earned
+
+    def close_loop(self, pool_id: str, fraction: float, eth_price: float) -> Dict[str, Any]:
+        pos = self.positions.get(pool_id)
+        if not pos:
+            return {"withdrawn_usd": 0.0, "cost_usd": 0.0}
+        fraction = max(0.0, min(1.0, fraction))
+        coll = float(pos["collateral_eth"]) * fraction
+        debt = float(pos["debt_eth"]) * fraction
+        gross = (coll - debt) * eth_price
+        # smontaggio: tutto il collaterale ritirato passa da uno swap
+        n_giri = max(1, int(round(debt / max(coll - debt, 1e-12))))
+        cost = self._charge(3 * n_giri + 3, coll * eth_price)
+        net = max(0.0, gross - cost)
+        if fraction >= 0.999:
+            del self.positions[pool_id]
+        else:
+            pos["collateral_eth"] = float(pos["collateral_eth"]) - coll
+            pos["debt_eth"] = float(pos["debt_eth"]) - debt
+            pos["value_usd"] = (pos["collateral_eth"] - pos["debt_eth"]) * eth_price
         self.state["usdc"] = self.usdc + net
         self.state["operations"] = int(self.state.get("operations", 0)) + 1
         self.save()

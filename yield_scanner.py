@@ -256,6 +256,16 @@ def format_universe_for_prompt(universe: List[Dict[str, Any]]) -> str:
         "TVL | storico | eseguibile"
     ]
     for p in universe:
+        loop = p.get("loop")
+        if loop:
+            lines.append(
+                f"{p['pool_id']} | aave-v3 LOOP {p['symbol']} leva {loop['leverage']:.2f}x | ETH (esposto al "
+                f"prezzo) | APY netto {loop['net_apy']:.2f}% (staking {loop['staking_apy']:.2f}% + supply "
+                f"{loop['supply_apy']:.2f}% sul collaterale, borrow WETH {loop['borrow_apy']:.2f}%) | "
+                f"HF all'ingresso {loop['hf_target'] or 0:.2f} | capienza ${loop['capacity_usd']:,.0f} | "
+                f"si (aave-loop)"
+            )
+            continue
         lines.append(
             f"{p['pool_id']} | {p['project']}{' (' + p['pool_meta'] + ')' if p.get('pool_meta') else ''} | "
             f"{p['asset']} | {p['effective_apy']:.2f}% ({p['apy_base']:.2f}% + {p['apy_reward']:.2f}%) | "

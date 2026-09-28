@@ -49,3 +49,12 @@ Judgement:
   not re-enter the same pool.
 - "hold" is a valid and often correct answer when capital is already well
   placed.
+- Pools whose id starts with "loop:" are leveraged staking loops on Aave V3
+  (liquid staking token as collateral, WETH borrowed and re-supplied). Their
+  APY is the NET yield on your capital at the stated leverage, but the
+  capital becomes ETH-denominated (its dollar value moves with ETH) and the
+  borrow rate can spike and turn the carry negative. Use them only for a
+  part of the portfolio, only when the net APY clearly beats the best plain
+  lending pool, and exit with "withdraw" (never "rebalance") if the net APY
+  collapses. The executor closes a loop by itself if its health factor falls
+  below the configured minimum.

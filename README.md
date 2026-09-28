@@ -167,6 +167,49 @@ POOL_BLOCKLIST="0xIndirizzoDelVault"
 Un vault in watchlist diventa eseguibile solo se il riconoscimento on-chain
 lo accetta (asset giusto, TVL coerente).
 
+## 🔁 Looping su Aave (modalità opzionale)
+
+Con `LOOP_ENABLED=true` il bot aggiunge all'universo dei pool i **loop a leva
+su Aave V3**: un liquid staking token (wstETH, cbETH, weETH) come
+collaterale, WETH preso in prestito, ricomprato in LST e ridepositato, a giri,
+fino alla leva voluta.
+
+```
+APY netto = leva × (staking + supply LST) − (leva − 1) × borrow WETH
+es. 3x, staking 3.0%, supply 0.1%, borrow 2.0%  →  3 × 3.1 − 2 × 2.0 = 5.3%
+```
+
+Per il modello un loop è un pool come gli altri (`pool_id` = `loop:WSTETH`,
+`loop:CBETH`, `loop:WEETH`): lo propone con `deposit` e ne esce con
+`withdraw`. Il resto lo fa l'esecutore:
+
+- **tutto letto dalla chain a ogni ciclo**: tassi, LTV e soglia di
+  liquidazione (con la categoria e-mode giusta, riconosciuta da sola), cap di
+  supply/borrow, WETH disponibile, prezzi dell'oracolo Aave. Lo staking arriva
+  da DefiLlama. Il simbolo on-chain di ogni LST viene verificato;
+- **leva** = la minore fra `LOOP_MAX_LEVERAGE`, quella che lascia l'health
+  factor a `LOOP_TARGET_HEALTH_FACTOR` e quella raggiungibile con l'LTV;
+- **limiti**: al massimo `LOOP_MAX_CAPITAL_PCT` del portafoglio nei loop, metà
+  dello spazio libero sotto i cap di Aave, più i soliti limiti per pool e per
+  protocollo (un loop conta come Aave);
+- **uscite automatiche**: health factor del loop sotto
+  `LOOP_MIN_HEALTH_FACTOR` (depeg LST/ETH), oppure APY netto sotto
+  `LOOP_EXIT_NET_APY` per `LOOP_EXIT_CYCLES` cicli di fila (tasso di
+  prestito esploso). Lo smontaggio procede a giri — ritira LST, vende in WETH,
+  rimborsa — senza mai scendere sotto l'HF minimo, poi riporta tutto in USDC;
+- un loop **non si ribilancia**: si ritira e si rientra.
+
+⚠️ Collaterale e debito sono entrambi ETH, quindi il prezzo di ETH non
+avvicina la liquidazione, ma **il valore in dollari del loop segue ETH**: è
+l'unico punto del bot in cui il capitale smette di essere in USDC. Il rischio
+di liquidazione viene da un depeg dell'LST o da interessi che corrono.
+
+In paper il loop matura staking e interessi reali letti dalla chain e viene
+valutato al prezzo corrente di ETH (si vede l'esposizione); il dry-run
+stampa il piano dei giri. La dashboard mostra i mercati di looping (staking,
+borrow, leva, APY netto, HF, e-mode, capienza) e, per ogni loop aperto, leva
+e health factor, che finiscono anche nel report Telegram.
+
 ## 📱 Telegram e dashboard
 
 Comandi: `/status`, `/positions`, `/pools`, `/last`, `/run`. Sono accettati
@@ -205,6 +248,7 @@ report Telegram del ciclo.
 | `config.py` | contratti Base, soglie di screening e di rischio |
 | `yield_scanner.py` | DefiLlama Yields, screening, punteggio |
 | `protocols.py` | adattatori Aave V3, ERC-4626, Compound V3, cToken |
+| `looping.py` | loop LST/WETH su Aave V3: mercati, leva, health factor, apertura e smontaggio |
 | `yield_manager.py` | stato del portafoglio, limiti, depositi/prelievi/ribilanciamenti |
 | `positions.py` | registro delle posizioni (ingresso, APY, TVL) |
 | `paper.py` | portafoglio virtuale che matura l'APY reale |

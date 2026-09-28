@@ -16,6 +16,8 @@ import time
 from typing import Any, Dict, List, Optional
 
 import requests
+
+import config
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -86,6 +88,14 @@ def format_positions(status: Dict[str, Any], limit: int = 6) -> List[str]:
     for p in status.get("positions", [])[:limit]:
         apy = p.get("apy_now")
         apy_txt = f"{apy:.2f}%" if apy is not None else "n/d"
+        loop = p.get("loop")
+        if loop:
+            hf = loop.get("health_factor")
+            warn = "⚠️ " if hf is not None and hf < config.LOOP_MIN_HEALTH_FACTOR * 1.1 else ""
+            lines.append(f"   • 🔁 loop {_e(p.get('symbol'))} {loop.get('leverage') or 0:.2f}x: "
+                         f"${p.get('value_usd', 0):.2f} @ {apy_txt} netto, "
+                         f"{warn}HF {hf if hf is None else f'{hf:.2f}'}")
+            continue
         lines.append(f"   • {_e(p.get('project'))} {_e(p.get('symbol'))}: "
                      f"${p.get('value_usd', 0):.2f} @ {apy_txt}")
     return lines

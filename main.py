@@ -22,6 +22,16 @@ from yield_manager import YieldManager
 def _positions_for_prompt(status):
     lines = []
     for p in status["positions"]:
+        loop = p.get("loop")
+        if loop:
+            lines.append(
+                f"- pool_id={p['pool_id']} | LOOP {p['symbol']} | equity ${p['value_usd']:.2f} "
+                f"(collaterale ${loop['collateral_usd']:.2f}, debito ${loop['debt_usd']:.2f}) | "
+                f"leva {loop['leverage'] or 0:.2f}x | health factor {loop['health_factor'] or 0:.2f} | "
+                f"APY netto ora {p['apy_now'] if p['apy_now'] is not None else 'n/d'}% "
+                f"(ingresso {p.get('entry_apy')}%) | aperto da {p['held_hours']:.0f}h"
+            )
+            continue
         lines.append(
             f"- pool_id={p['pool_id']} | {p['project']} {p['symbol']}"
             f"{' (' + p['pool_meta'] + ')' if p.get('pool_meta') else ''} | "
@@ -102,10 +112,14 @@ def run_cycle():
         f"max {config.MAX_POSITIONS} posizioni, deposito ${config.MIN_DEPOSIT_USD:.0f}-${config.MAX_DEPOSIT_USD:.0f}, "
         f"ribilanciamento solo con +{config.MIN_APY_IMPROVEMENT:.2f} punti di APY, dopo "
         f"{config.MIN_HOLD_HOURS:.0f}h e se si ripaga entro {config.MAX_BREAKEVEN_DAYS:.0f} giorni\n"
-        f"</limiti_esecutore>\n"
+        + (f"looping attivo: al massimo {config.LOOP_MAX_CAPITAL_PCT:.0%} del portafoglio nei loop, "
+           f"leva max {config.LOOP_MAX_LEVERAGE:.1f}x, uscita automatica sotto health factor "
+           f"{config.LOOP_MIN_HEALTH_FACTOR:.2f}; un loop non si ribilancia, si ritira\n"
+           if config.LOOP_ENABLED else "looping disattivato\n")
+        + "</limiti_esecutore>\n"
     )
     portfolio_data = (
-        f"{json.dumps({k: v for k, v in status.items() if k != 'positions'}, default=str)}\n"
+        f"{json.dumps({k: v for k, v in status.items() if k not in ('positions', 'loops')}, default=str)}\n"
         f"Uscite automatiche in questo ciclo: "
         f"{json.dumps(exit_results, default=str) if exit_results else 'nessuna'}"
     )

@@ -108,7 +108,7 @@ HTML = r"""<!DOCTYPE html>
   <section class="card">
     <div class="card-head"><h2>🏦 Posizioni aperte</h2><small id="pos-note">vault e lending su Base</small></div>
     <div class="table-wrap"><table>
-      <thead><tr><th>Pool</th><th>Asset</th><th>Valore</th><th>Depositato</th><th>Rendimento</th><th>APY ora</th><th>APY ingresso</th><th>TVL</th><th>Aperta da</th></tr></thead>
+      <thead><tr><th>Pool</th><th>Asset</th><th>Valore</th><th>Depositato</th><th>Rendimento</th><th>APY ora</th><th>APY ingresso</th><th>TVL / leva</th><th>Aperta da</th></tr></thead>
       <tbody id="positions"></tbody>
     </table></div>
   </section>
@@ -124,6 +124,15 @@ HTML = r"""<!DOCTYPE html>
     </div>
   </section>
 </div>
+
+<section class="card section" id="loops-panel" hidden>
+  <div class="card-head"><h2>🔁 Looping su Aave <small id="loops-note"></small></h2></div>
+  <div class="table-wrap"><table>
+    <thead><tr><th>Loop</th><th>Staking</th><th>Borrow WETH</th><th>Leva</th><th>APY netto</th><th>HF ingresso</th><th>E-mode</th><th>Capienza</th><th>Stato</th></tr></thead>
+    <tbody id="loops"></tbody>
+  </table></div>
+  <p class="note">Il capitale in un loop è esposto al prezzo di ETH. APY netto = leva × (staking + supply) − (leva − 1) × borrow WETH.</p>
+</section>
 
 <h2 class="section-title">🔎 Universo dei pool <small>screening dell'ultima scansione DefiLlama</small></h2>
 <section class="card section">
@@ -180,8 +189,33 @@ function renderStatus(s) {
     <td>${esc(p.asset)}</td><td class="num">${usd(p.value_usd)}</td><td class="num">${usd(p.deposited_usd)}</td>
     <td class="num ${cls(p.pnl_usd)}">${signedUsd(p.pnl_usd, 4)}</td>
     <td class="num">${pct(p.apy_now)}</td><td class="num">${pct(p.entry_apy)}</td>
-    <td class="num">${big(p.tvl_now)}</td><td class="num">${Number(p.held_hours || 0).toFixed(0)}h</td></tr>`).join('')
+    <td class="num">${p.loop ? loopCell(p.loop, s.loops) : big(p.tvl_now)}</td><td class="num">${Number(p.held_hours || 0).toFixed(0)}h</td></tr>`).join('')
     || empty(9, 'Nessuna posizione aperta: il capitale è in USDC.');
+  renderLoops(s.loops);
+}
+
+function hfBadge(hf, min) {
+  if (hf == null) return '--';
+  const tone = hf < min * 1.05 ? 'b-bad' : hf < min * 1.15 ? 'b-warn' : 'b-ok';
+  return `<span class="badge ${tone}">HF ${Number(hf).toFixed(2)}</span>`;
+}
+
+function loopCell(l, cfg) {
+  return `${l.leverage != null ? Number(l.leverage).toFixed(2) + 'x' : '--'} ${hfBadge(l.health_factor, cfg?.min_health_factor || 1.1)}`;
+}
+
+function renderLoops(cfg) {
+  $('loops-panel').hidden = !cfg;
+  if (!cfg) return;
+  $('loops-note').textContent = `leva max ${Number(cfg.max_leverage).toFixed(1)}x • uscita sotto HF ${Number(cfg.min_health_factor).toFixed(2)}`;
+  $('loops').innerHTML = (cfg.markets || []).map(m => `<tr><td><b>${esc(m.symbol)}</b></td>
+    <td class="num">${pct(m.staking_apy)}</td><td class="num">${pct(m.borrow_apy)}</td>
+    <td class="num">${m.leverage != null ? Number(m.leverage).toFixed(2) + 'x' : '--'}</td>
+    <td class="num ${cls(m.net_apy)}"><b>${pct(m.net_apy)}</b></td>
+    <td class="num">${m.hf_target != null ? Number(m.hf_target).toFixed(2) : '--'}</td>
+    <td>${m.emode_id ? esc(m.emode_id) : 'no'}</td><td class="num">${big(m.capacity_usd)}</td>
+    <td>${m.executable ? '<span class="badge b-ok">eseguibile</span>' : '<span class="badge b-no" title="' + esc(m.reason) + '">' + esc(m.reason || 'no') + '</span>'}</td></tr>`).join('')
+    || empty(9, 'Nessun mercato letto in questo ciclo.');
 }
 
 function renderPools() {
@@ -269,7 +303,9 @@ def build_meta(data):
                 ["Investito", f"${float(p.get('invested_usd') or 0.0):,.2f}"],
             ],
             "note": "I depositi maturano l'APY reale corrente di ogni pool (DefiLlama). Posizioni tenute "
-                    "in USD: per vault su WETH/cbBTC non si simula l'oscillazione di prezzo; gas forfettario.",
+                    "in USD: per vault su WETH/cbBTC non si simula l'oscillazione di prezzo; gas forfettario."
+                    + (" I loop invece sono tenuti in ETH (staking e interessi reali letti da Aave) e "
+                       "valutati al prezzo corrente di ETH." if status.get("loops") else ""),
         }
     wallet = None
     if status.get("eth_balance") is not None:

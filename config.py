@@ -146,6 +146,48 @@ REWARD_APY_WEIGHT = _f("REWARD_APY_WEIGHT", 0.5)
 POOL_BLOCKLIST = _set("POOL_BLOCKLIST")
 POOL_WATCHLIST = _set("POOL_WATCHLIST")
 
+# ---------------------------------------------------------------- looping (Aave V3)
+# Modalita' a leva: si deposita un liquid staking token (wstETH, cbETH,
+# weETH) come collaterale, si prende in prestito WETH, lo si ricompra in LST
+# e lo si rideposita, fino alla leva voluta. Si incassa lo staking sulla
+# leva e si paga il tasso del prestito su (leva - 1):
+#
+#     APY netto = leva x (staking + supply) - (leva - 1) x borrow WETH
+#
+# ATTENZIONE: il capitale messo in un loop diventa esposto al prezzo di ETH
+# (collaterale e debito sono entrambi in ETH, il netto e' ETH). Il rischio di
+# liquidazione nasce da un depeg LST/ETH o da un tasso di prestito che
+# esplode: per questo il bot misura l'health factor a ogni ciclo ed esce da
+# solo sotto LOOP_MIN_HEALTH_FACTOR. Spento di default.
+LOOP_ENABLED = _b("LOOP_ENABLED", False)
+LOOP_TOKENS = {
+    "WSTETH": {"address": "0xc1CBa3fCea344f92D9239c08C0568f6F2F0ee452", "decimals": 18,
+               "symbol": "wstETH", "staking": ("lido", "STETH")},
+    "CBETH": {"address": "0x2Ae3F1Ec7F1F5012CFEab0185bfc7aa3cf0DEc22", "decimals": 18,
+              "symbol": "cbETH", "staking": ("coinbase-wrapped-staked-eth", "CBETH")},
+    "WEETH": {"address": "0x04C0599Ae5A44757c0af6F9eC3b93da8976c150A", "decimals": 18,
+              "symbol": "weETH", "staking": ("ether.fi-stake", "WEETH")},
+}
+LOOP_ASSETS = [
+    s.strip().upper()
+    for s in os.getenv("LOOP_ASSETS", "WSTETH,CBETH,WEETH").split(",")
+    if s.strip().upper() in LOOP_TOKENS
+]
+LOOP_MAX_LEVERAGE = _f("LOOP_MAX_LEVERAGE", 3.0)
+# La leva effettiva e' la minore fra LOOP_MAX_LEVERAGE e quella che lascia
+# l'health factor a LOOP_TARGET_HEALTH_FACTOR con la soglia di liquidazione
+# del mercato (e-mode compresa).
+LOOP_TARGET_HEALTH_FACTOR = _f("LOOP_TARGET_HEALTH_FACTOR", 1.25)
+LOOP_MIN_HEALTH_FACTOR = _f("LOOP_MIN_HEALTH_FACTOR", 1.10)     # sotto: uscita automatica
+LOOP_MIN_NET_APY = _f("LOOP_MIN_NET_APY", 4.0)                  # sotto: il loop non si propone
+LOOP_EXIT_NET_APY = _f("LOOP_EXIT_NET_APY", 0.0)                # sotto per N cicli: uscita
+LOOP_EXIT_CYCLES = _i("LOOP_EXIT_CYCLES", 6)
+LOOP_MAX_CAPITAL_PCT = _f("LOOP_MAX_CAPITAL_PCT", 0.30)         # quota massima nei loop
+LOOP_MAX_ITERATIONS = _i("LOOP_MAX_ITERATIONS", 10)
+LOOP_LTV_BUFFER = _f("LOOP_LTV_BUFFER", 0.97)                   # si prende al massimo il 97% dell'LTV
+# -1 = riconosce da solo la categoria e-mode giusta, 0 = niente e-mode
+LOOP_EMODE_CATEGORY = _i("LOOP_EMODE_CATEGORY", -1)
+
 # ---------------------------------------------------------------- API esterne
 DEFILLAMA_POOLS_URL = "https://yields.llama.fi/pools"
 DEFILLAMA_CHART_URL = "https://yields.llama.fi/chart/"

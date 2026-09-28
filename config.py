@@ -79,12 +79,17 @@ KNOWN_ASSETS = {
 }
 
 # ---------------------------------------------------------------- looping lending (leveraged staking)
-ENABLE_LOOPING = _b("ENABLE_LOOPING", True)
+# Spento di default: il capitale in un loop segue il prezzo di ETH.
+ENABLE_LOOPING = _b("ENABLE_LOOPING", False)
 LOOP_MAX_LEVERAGE = _f("LOOP_MAX_LEVERAGE", 2.2)               # Leva max conservativa (2.0x - 2.2x)
 LOOP_TARGET_HEALTH_FACTOR = _f("LOOP_TARGET_HEALTH_FACTOR", 1.55) # Target Health Factor iniziale
 LOOP_MIN_HEALTH_FACTOR = _f("LOOP_MIN_HEALTH_FACTOR", 1.30)    # Sotto 1.30 = uscita automatica per rischio liquidazione
 LOOP_MIN_NET_APY = _f("LOOP_MIN_NET_APY", 3.0)                 # Rendimento minimo netto per considerare il loop (%)
 LOOP_BORROW_ASSET = os.getenv("LOOP_BORROW_ASSET", "WETH")     # Asset preso in prestito per la leva (ETH-denominated)
+LOOP_MAX_ITERATIONS = _i("LOOP_MAX_ITERATIONS", 10)            # giri borrow -> swap -> supply al massimo
+LOOP_LTV_BUFFER = _f("LOOP_LTV_BUFFER", 0.97)                  # ogni giro usa al massimo il 97% dell'LTV
+# -1 = categoria e-mode riconosciuta dalla chain, 0 = niente e-mode, N = forzata
+LOOP_EMODE_CATEGORY = _i("LOOP_EMODE_CATEGORY", -1)
 
 # Quali asset il bot puo' depositare. Default solo USDC: niente rischio
 # di prezzo, il rendimento e' l'unica variabile.

@@ -200,12 +200,16 @@ def build_loop_pools(base_pools: List[Dict[str, Any]]) -> Tuple[List[Dict[str, A
 
     approved, rejected = [], []
     leverage = config.LOOP_MAX_LEVERAGE
+    # staking reale da DefiLlama; tassi, leva e HF li riscrive poi la chain
+    # (YieldManager._refresh_loop_pool)
+    import loop_math
+    staking = loop_math.staking_apys()
 
     for sym, addr, key in loop_candidates:
         p_data = lst_pools.get(key)
         if not p_data:
             continue
-        staking_yield = config.KNOWN_ASSETS.get(sym, {}).get("staking_yield", 3.0)
+        staking_yield = staking.get(sym, config.KNOWN_ASSETS.get(sym, {}).get("staking_yield", 3.0))
         tvl_usd = _num(p_data.get("tvlUsd"), 30_000_000)
         supply_apy = _num(p_data.get("apyBase"), 0.0)
 

@@ -9,7 +9,6 @@ DASHBOARD_RUN_TOKEN e' impostato: la dashboard non ha login e un ciclo
 puo' firmare transazioni.
 """
 
-import hmac
 import json
 import os
 import subprocess
@@ -23,6 +22,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import config  # noqa: E402
+import dashboard_auth  # noqa: E402
 import db_utils  # noqa: E402
 
 PORT = int(os.getenv("DASHBOARD_PORT", os.getenv("PORT", "3000")))
@@ -342,16 +342,7 @@ class Handler(BaseHTTPRequestHandler):
             self.end_headers()
 
     def _is_auth_valid(self) -> bool:
-        if not RUN_TOKEN:
-            return False
-        token = self.headers.get("X-Run-Token", "") or self.headers.get("X-Admin-Token", "")
-        if not token and "Authorization" in self.headers:
-            auth = self.headers.get("Authorization", "")
-            if auth.startswith("Bearer "):
-                token = auth[7:].strip()
-            else:
-                token = auth.strip()
-        return bool(token and hmac.compare_digest(token, RUN_TOKEN))
+        return dashboard_auth.is_run_token_valid(self.headers, RUN_TOKEN)
 
     def do_POST(self):
         path = urlparse(self.path).path

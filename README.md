@@ -4,6 +4,8 @@
 
 <br clear="left">
 
+> ⚠️ **Software sperimentale, non consulenza finanziaria.** Il bot opera con denaro reale su Base e può perdere in parte o del tutto il capitale che gli affidi. Parti in paper trading o dry-run; in live usa un wallet dedicato e solo importi che puoi permetterti di perdere. Dettagli nella sezione **Avvertenza** in fondo.
+
 Agente che cerca **rendimento passivo su Base**: trova i mercati di lending e
 i vault che pagano interesse (Aave, Compound, Morpho, Moonwell, Fluid,
 Euler...), ci deposita il capitale inattivo e lo sposta solo quando un pool
@@ -251,7 +253,22 @@ report Telegram del ciclo.
 
 ## ⚠️ Avvertenza
 
-Il rendimento passivo **non è senza rischio**: un exploit del protocollo, un
+Questo software è sperimentale ed è fornito "così com'è", senza garanzie di alcun tipo
+(vedi la licenza MIT). Non è consulenza finanziaria né un invito a investire.
+
+- **Puoi perdere denaro.** Bug, decisioni sbagliate del modello, slippage, exploit dei protocolli,
+  oracoli manipolati e liquidazioni possono far perdere in parte o del tutto il capitale.
+- **Le decisioni le prende un LLM.** Può sbagliare o comportarsi in modo imprevedibile: i limiti
+  dell'esecutore riducono il danno, non lo azzerano. I rendimenti passati, anche in paper, non
+  garantiscono quelli futuri.
+- **Parti in paper o dry-run.** In live usa un wallet dedicato al bot, con importi che puoi
+  permetterti di perdere, e non riutilizzare quella chiave privata altrove.
+- **Proteggi le chiavi.** La chiave privata va solo nelle variabili d'ambiente del deploy: non
+  committarla mai. Senza `DASHBOARD_RUN_TOKEN` i comandi della dashboard restano disattivati:
+  impostalo con un valore lungo e casuale prima di esporla su Internet.
+- **Leggi e tasse.** Sei responsabile del rispetto delle norme e degli obblighi fiscali del tuo paese.
+
+**Rischi specifici di questo bot.** Il rendimento passivo **non è senza rischio**: un exploit del protocollo, un
 oracolo manipolato o una cattiva liquidazione possono far perdere il
 capitale depositato; un mercato al 100% di utilizzo può bloccare il
 prelievo per ore o giorni; una stablecoin può perdere il peg. Screening e

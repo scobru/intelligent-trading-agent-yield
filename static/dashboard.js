@@ -34,8 +34,20 @@
     return '$' + Number(v).toExponential(3);
   };
   const cls = (v) => !isNum(v) ? '' : Number(v) >= 0 ? 'pos' : 'neg';
-  // timestamp SQLite ("2026-09-23 10:15:00") o ISO -> "09-23 10:15"
-  const time = (s) => s ? String(s).replace('T', ' ').slice(5, 16) : '--';
+  // timestamp SQLite ("2026-09-23 10:15:00"), ISO o unix float/int -> "09-23 10:15"
+  const time = (s) => {
+    if (!s) return '--';
+    if (typeof s === 'number' || (!isNaN(s) && !String(s).includes('-') && !String(s).includes(':'))) {
+      const num = Number(s);
+      const ms = num < 1e11 ? num * 1000 : num;
+      const d = new Date(ms);
+      if (!isNaN(d.getTime())) {
+        const pad = (n) => String(n).padStart(2, '0');
+        return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      }
+    }
+    return String(s).replace('T', ' ').slice(5, 16);
+  };
   const empty = (cols, text) => `<tr><td colspan="${cols}" class="empty">${esc(text)}</td></tr>`;
   const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
 
